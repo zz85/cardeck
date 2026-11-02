@@ -164,7 +164,17 @@ object BtProfiles {
             Log.w(TAG, "proxy() called on main thread - getProfileProxy callback would be blocked, returning null")
             return null
         }
-        if (!latch.await(1_200, TimeUnit.MILLISECONDS)) return null
+        // 连接线程被 stop() 打断时这里会抛 InterruptedException：未捕获会直接打死
+        // iap2-bt-client 线程（2026-11-01 Bigme 实测 37 次 FATAL）。保留中断标记交给
+        // 调用方的循环按 running/generation 退出。
+        val ready =
+            try {
+                latch.await(1_200, TimeUnit.MILLISECONDS)
+            } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+                return null
+            }
+        if (!ready) return null
         return ref.get()?.also { synchronized(proxies) { proxies[profile] = it } }
     }
 

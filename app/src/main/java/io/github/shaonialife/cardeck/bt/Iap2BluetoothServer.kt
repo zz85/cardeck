@@ -86,7 +86,9 @@ class Iap2BluetoothServer(
                 adapter.listenUsingRfcommWithServiceRecord(SDP_NAME, IPHONE_IAP2_UUID),
             )
             running = true
-            log("BT: listening on $SDP_NAME, waiting for receiver to connect back...")
+            // toString() 形如「ServerSocket: Type: TYPE_RFCOMM Channel: N」：参考实现在
+            // smartBox 上用的是信道 4，信道号对排查「车机不回连」有用。
+            log("BT: listening on $SDP_NAME (${serverSocket.get()}), waiting for receiver to connect back...")
             Thread(::acceptLoop, "iap2-bt-accept").apply {
                 isDaemon = true
                 start()

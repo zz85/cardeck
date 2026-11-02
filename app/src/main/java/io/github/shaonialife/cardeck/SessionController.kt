@@ -535,6 +535,9 @@ object SessionController {
             bluetoothServer?.isRunning == true ||
             bluetoothClient?.isRunning == true
 
+    /** 是否已在向车机推流（AirPlay 会话已建立）。 */
+    fun isStreaming(): Boolean = videoSender?.isRunning == true
+
     /**
      * 「启动连接」主体（权限检查由 Activity 完成后调用）：前台保活服务 + 双向蓝牙。
      * 幂等：已有会话时 BT 组件的 start() 自行短路，不会双开。

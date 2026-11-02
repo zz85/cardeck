@@ -57,6 +57,31 @@ class CarPlayService : Service() {
         wifiLock = null
     }
 
+    private val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
+
+    private val autoStopRunnable =
+        Runnable {
+            when {
+                SessionController.isStreaming() ->
+                    fileLog("SVC: auto-stop cancelled - session is streaming")
+                SessionController.isSessionRunning() -> {
+                    fileLog("SVC: car Bluetooth still gone after ${AUTO_STOP_GRACE_MILLIS / 1000}s - closing session")
+                    SessionController.disconnect(applicationContext)
+                }
+                else -> Unit
+            }
+        }
+
+    private fun scheduleAutoStop() {
+        mainHandler.removeCallbacks(autoStopRunnable)
+        mainHandler.postDelayed(autoStopRunnable, AUTO_STOP_GRACE_MILLIS)
+        fileLog("SVC: still connecting - will close the session if the car stays gone for ${AUTO_STOP_GRACE_MILLIS / 1000}s")
+    }
+
+    private fun cancelPendingAutoStop() {
+        mainHandler.removeCallbacks(autoStopRunnable)
+    }
+
     override fun onStartCommand(
         intent: Intent?,
         flags: Int,
@@ -65,12 +90,21 @@ class CarPlayService : Service() {
         // 下车：车机蓝牙 ACL 断开（由 startService 投递——服务在跑时进程已是前台服务态，
         // 不受后台启动限制）。disconnect 内部会 stopService → onDestroy。
         if (intent?.action == ACTION_AUTO_STOP_SESSION) {
-            fileLog("SVC: got \"auto-stop on exit\" - closing session")
-            if (SessionController.isSessionRunning()) {
-                SessionController.disconnect(applicationContext)
-            } else {
-                stopForeground(STOP_FOREGROUND_REMOVE)
-                stopSelf()
+            fileLog("SVC: got \"auto-stop on exit\"")
+            when {
+                !SessionController.isSessionRunning() -> {
+                    cancelPendingAutoStop()
+                    stopForeground(STOP_FOREGROUND_REMOVE)
+                    stopSelf()
+                }
+                // 推流中：BT 断开是正常交接（车机 disableBluetooth 后会主动断 RFCOMM/ACL），
+                // 真离车由 AirPlay 侧 TCP 存活探测 / onEnded 收口，这里不拆健康会话。
+                SessionController.isStreaming() ->
+                    fileLog("SVC: streaming over Wi-Fi - ignoring Bluetooth disconnect")
+                // 连接中：我们自己的 RFCOMM 尝试会建立又断开 ACL，立即收摊等于
+                // 自己打断自己（2026-11-01 smartBox 实测：连-断-收摊循环）。宽限期内
+                // 车机 ACL 重新连上（AUTO_START）或开始推流即取消。
+                else -> scheduleAutoStop()
             }
             return START_NOT_STICKY
         }
@@ -105,6 +139,12 @@ class CarPlayService : Service() {
         // WiFi 连接器、mDNS 广播器都在 ensureSessionObjects 里），再走与首页按钮相同的流程。
         // 放后台线程：冷启动时 ensure 要读偏好/绑定 UserService，别压在服务主线程上。
         if (intent?.action == ACTION_AUTO_START_SESSION) {
+            cancelPendingAutoStop()
+            if (SessionController.isSessionRunning()) {
+                // 连接尝试本身会触发 ACL_CONNECTED：会话已在跑就不要重复起步
+                fileLog("SVC: got \"auto-start on entry\" - session already running, ignoring")
+                return START_STICKY
+            }
             fileLog("SVC: got \"auto-start on entry\" - starting session")
             val app = applicationContext
             Bg.run("auto-session-start") {
@@ -192,6 +232,7 @@ class CarPlayService : Service() {
     }
 
     override fun onDestroy() {
+        cancelPendingAutoStop()
         releaseLocks()
         // Android 14+：MediaProjection 与前台的 mediaProjection 类型绑定——
         // 保活服务停止（如用户点「断开连接」）时系统会连带停止投影。
@@ -218,6 +259,9 @@ class CarPlayService : Service() {
 
         /** 下车自动收摊：ACL 断开时投递（只有服务在跑才发，见 CarBluetoothReceiver）。 */
         const val ACTION_AUTO_STOP_SESSION = "io.github.shaonialife.cardeck.action.AUTO_STOP"
+
+        /** 连接中车机 ACL 断开后的收摊宽限期（我们自己的 RFCOMM 尝试会反复连断 ACL）。 */
+        private const val AUTO_STOP_GRACE_MILLIS = 60_000L
 
         /** 镜像模式：授权后由 MainActivity 写入；服务重声明 FGS 类型后方可创建虚拟屏。 */
         @Volatile

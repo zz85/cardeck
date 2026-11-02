@@ -69,7 +69,7 @@ class CarBluetoothReceiver : BroadcastReceiver() {
                 )
             }
         } else {
-            DebugFileLog.append(app, "AUTO: car Bluetooth disconnected ${name ?: "?"} ($address) - ending session")
+            DebugFileLog.append(app, "AUTO: car Bluetooth disconnected ${name ?: "?"} ($address) - notifying session")
             // 会话在跑时服务就是前台进程，startService 允许；不在跑说明本来就没有会话
             runCatching {
                 context.startService(
