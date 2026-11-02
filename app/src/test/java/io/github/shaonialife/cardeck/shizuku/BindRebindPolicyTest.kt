@@ -28,7 +28,7 @@ class BindRebindPolicyTest {
         // 刚发起（含旧实现会误判的 1.5s 点）都要继续等——这正是死锁的根源
         listOf(0L, 100L, 1_500L, 1_501L, 3_000L, 7_999L).forEach { waited ->
             assertFalse(
-                "等待 ${waited}ms 不应判卡死（旧实现在 1.5s 就判死并杀服务进程）",
+                "waiting ${waited}ms must not count as stuck (old impl declared it dead at 1.5s and killed the service)",
                 shouldRebind(binding = true, waitedMs = waited, stuckTimeoutMs = timeout),
             )
         }

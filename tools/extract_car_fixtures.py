@@ -1,20 +1,23 @@
 #!/usr/bin/env python3
-"""从 CarDeck 运行日志提取「车型重放 fixtures」。
+"""Extract "car-model replay fixtures" from CarDeck runtime logs.
 
-用法：
-    python3 tools/extract_car_fixtures.py <日志文件或目录>... [-o app/src/test/resources/carplay/fixtures]
+Usage:
+    python3 tools/extract_car_fixtures.py <log file or directory>... [-o app/src/test/resources/carplay/fixtures]
 
-产出：每个日志 → <车型>__<日志名>.jsonl
-  首行 meta（车型/来源/轮次概览），其后按层分事件：
-  - bt 层：{"layer":"bt","round":N,"dir":"rx|tx","hex":"…"}（RAW rx/tx 按轮次拼接）
-  - tunnel 层：{"layer":"tunnel","dir":"rx","id":…,"hex":"…"}（IAPLINK rx 的 CSM 体）
-               {"layer":"tunnel","dir":"tx","id":…}（隧道 tx 只有消息号——golden 序列）
+Output: each log → <car model>__<log name>.jsonl
+  First line is meta (car model/source/round overview), followed by events per layer:
+  - bt layer: {"layer":"bt","round":N,"dir":"rx|tx","hex":"…"} (RAW rx/tx concatenated per round)
+  - tunnel layer: {"layer":"tunnel","dir":"rx","id":…,"hex":"…"} (CSM body of IAPLINK rx)
+                  {"layer":"tunnel","dir":"tx","id":…} (tunnel tx has only message IDs — the golden sequence)
 
-轮次界定：进入（接收端已连入/已连入…RFCOMM 建立）→ 结束（LINK closed/SESSION 失败/
-SESSION 结束/保活结束）。仅保留含 0x1d01 的轮次（没走到识别的轮次没有重放价值），
-并带 outcome 与时长（重放测试据此控制时长与配额）。
+Round boundaries: start (receiver connected in / connected to … RFCOMM established) → end (LINK closed/SESSION failed/
+SESSION ended/keep-alive ended). Only rounds containing 0x1d01 are kept (rounds that never reached identification have no replay value),
+with outcome and duration (the replay tests use these to control duration and quotas).
 
-fixture 含真实地址/热点名——目录默认 gitignore，入册需单独评审（见目录内 README）。
+Fixtures contain real addresses/hotspot names — the directory is gitignored by default; committing one requires a separate review (see the README in that directory).
+
+Note: the log-matching regexes below accept both the original Chinese log text and the translated English text,
+so logs from older and newer builds both work.
 """
 
 from __future__ import annotations
@@ -28,13 +31,13 @@ from pathlib import Path
 LINE_RE = re.compile(r"^\[(\d\d):(\d\d):(\d\d)\.(\d\d\d)\] (.*)$")
 RAW_RX_RE = re.compile(r"^RAW rx: ((?:[0-9a-f]{2} ?)+)$")
 RAW_TX_RE = re.compile(r"^RAW tx: ((?:[0-9a-f]{2} ?)+)$")
-LINK_CLOSE_RE = re.compile(r"LINK closed|SESSION 失败|SESSION 结束|保活结束")
-ROUND_START_RE = re.compile(r"接收端已连入|已连入 .+ 的无线 iAP2 服务")
-IDENT_RE = re.compile(r"iap2 rx=0x1d01 车机身份 name=(.*?) model=(.*?) manufacturer=(.*)$")
+LINK_CLOSE_RE = re.compile(r"LINK closed|SESSION 失败|SESSION 结束|保活结束|SESSION failed|SESSION ended|keep-alive ended")
+ROUND_START_RE = re.compile(r"接收端已连入|已连入 .+ 的无线 iAP2 服务|receiver connected name=|connected to .+\'s wireless iAP2 service")
+IDENT_RE = re.compile(r"iap2 rx=0x1d01 (?:车机身份|head unit identity) name=(.*?) model=(.*?) manufacturer=(.*)$")
 NSD_MODEL_RE = re.compile(r"NSD: TXT .*model=(\S+?),")
 TUNNEL_RX_RE = re.compile(r"^IAPLINK: rx 0x([0-9a-f]+) \(.*\) \d+B hex=((?:[0-9a-f]{2} ?)+)")
-TUNNEL_TX_RE = re.compile(r"^IAPLINK: 隧道 tx 0x([0-9a-f]+)")
-PHASE1_RE = re.compile(r"Phase 1 完成")
+TUNNEL_TX_RE = re.compile(r"^IAPLINK: (?:隧道|tunnel) tx 0x([0-9a-f]+)")
+PHASE1_RE = re.compile(r"Phase 1 完成|Phase 1 done")
 
 
 def ms_of(m: re.Match) -> int:
@@ -60,7 +63,7 @@ class Round:
         self.end_ms = start_ms
         self.rx = bytearray()
         self.tx = bytearray()
-        self.ids: list[str] = []  # 本轮出现过的 CSM 消息号（识别判定用）
+        self.ids: list[str] = []  # CSM message IDs seen in this round (used for identification checks)
         self.phase1 = False
         self.ident_text = ""
 
@@ -87,7 +90,7 @@ def extract(log_path: Path) -> dict | None:
             current = Round(len(rounds), now)
             rounds.append(current)
         if current is None:
-            # 日志从中途开始：仍聚一个匿名轮
+            # Log starts mid-way: still group into an anonymous round
             current = Round(0, now)
             rounds.append(current)
         current.end_ms = now
@@ -106,8 +109,8 @@ def extract(log_path: Path) -> dict | None:
         tx = RAW_TX_RE.match(body)
         if rx:
             data = bytes.fromhex(rx.group(1).replace(" ", ""))
-            # RAW 转储预算截断会留半行（实测出现过整行只剩 "ff"）：帧/marker 最短 6B，
-            # 更短的碎片直接丢，避免污染重放字节流
+            # RAW dump budget truncation can leave half lines (seen in practice: a whole line reduced to "ff"): frames/markers are at least 6B,
+            # shorter fragments are dropped to avoid polluting the replay byte stream
             if len(data) >= 6:
                 current.rx.extend(data)
                 current.end_ms = now
@@ -124,16 +127,16 @@ def extract(log_path: Path) -> dict | None:
     for r in rounds:
         if not r.rx:
             continue
-        ident = IDENT_RE.search(r.ident_text) or IDENT_RE.search("")  # ident per-round 取自该轮正文
+        ident = IDENT_RE.search(r.ident_text) or IDENT_RE.search("")  # per-round ident taken from that round's body
         raw = bytes(r.rx)
-        # RAW 转储预算按字节截断（旧日志 512B）：截断点常落在帧中间——按帧边界
-        # 裁掉尾部残帧，并记录识别帧（0x1D01 完整 CSM）是否幸存。识别帧被截断的
-        # 轮只能做链路层重放（引擎吃残帧会死等校验），识别帧完整的才做全量断言。
+        # RAW dump budget truncates by bytes (512B in old logs): the cut often lands mid-frame — trim
+        # the trailing partial frame at a frame boundary, and record whether the identification frame (complete 0x1D01 CSM) survived. Rounds
+        # with a truncated identification frame can only do link-layer replay (the engine stalls waiting on checksums for partial frames); only rounds with a complete one get full assertions.
         trimmed, truncated, has_ident, has_syn = trim_to_frame_boundary(raw)
         if not ("1d01" in raw.hex() or r.phase1):
-            continue  # 没走到识别：无重放价值（纯协商失败轮由链路层单测覆盖）
+            continue  # Never reached identification: no replay value (pure negotiation-failure rounds are covered by link-layer unit tests)
         if not has_syn:
-            continue  # 校验完好的 SYN 都没有（残骸轮）：链路层都驱动不了，无重放价值
+            continue  # Not even one SYN with valid checksums (wreckage round): can't even drive the link layer, no replay value
         keep.append(
             {
                 "layer": "bt",
@@ -155,13 +158,13 @@ MARKER = bytes.fromhex("ff550200ee10")
 
 
 def trim_to_frame_boundary(data: bytes) -> tuple[bytes, bool, bool]:
-    """返回（裁剪后的字节流, 是否发生裁剪, 完好帧里是否含 0x1D01 的 CSM）。
+    """Return (trimmed byte stream, whether trimming happened, whether the intact frames contain a 0x1D01 CSM).
 
-    「帧长完整」不等于「字节完好」：RAW 转储预算按字节截断会把不同 read 的
-    尾巴拼进同一条流，伪造出长度恰好完整的帧——载荷校验和不过，引擎会按协议
-    静默丢弃（2026-10-20 重放调试实测：回放停在 0x1D00 的根因）。因此逐帧按
-    引擎同款算法校验（帧头 9B 求和为 0；载荷+尾校验求和为 0），第一个不过的
-    帧起全部裁掉——留下的流引擎必然逐帧接受。
+    "Complete frame length" does not mean "intact bytes": the RAW dump budget truncates by bytes and can splice the
+    tails of different reads into the same stream, forging frames whose length happens to be complete — their payload checksum fails, and the engine
+    silently drops them per the protocol (found in replay debugging 2026-10-20: the root cause of replay stopping at 0x1D00). So each frame is checked
+    with the same algorithm as the engine (9B header sums to 0; payload + trailing checksum sums to 0), and everything from the first failing
+    frame onward is trimmed — the remaining stream is guaranteed to be accepted frame by frame by the engine.
     """
     off = 0
     has_ident = False
@@ -173,21 +176,21 @@ def trim_to_frame_boundary(data: bytes) -> tuple[bytes, bool, bool]:
         if off + 4 <= len(data) and data[off] == 0xFF and data[off + 1] == 0x5A:
             frame_len = (data[off + 2] << 8) | data[off + 3]
             if frame_len < 9 or off + frame_len > len(data):
-                break  # 长度不完整（预算截断点）
+                break  # Incomplete length (budget truncation point)
             frame = data[off : off + frame_len]
             if sum(frame[:9]) & 0xFF != 0:
-                break  # 帧头校验不过：拼接伪造的帧
+                break  # Header checksum failed: a spliced, forged frame
             if frame_len > 9 and sum(frame[9:frame_len]) & 0xFF != 0:
-                break  # 载荷校验不过：同上
+                break  # Payload checksum failed: same as above
             if frame_len > 9:
                 payload = frame[9 : frame_len - 1]
-                if frame[4] & 0x80:  # ctl 含 SYN 位（带会话表的同步包）
+                if frame[4] & 0x80:  # ctl has the SYN bit (sync packet carrying the session table)
                     has_syn = True
                 if payload[:2] == b"\x40\x40" and payload[4:6] == b"\x1d\x01":
                     has_ident = True
             off += frame_len
             continue
-        break  # 无法识别的字节：停止（保守丢弃尾部）
+        break  # Unrecognized bytes: stop (conservatively drop the tail)
     return data[:off], off < len(data), has_ident, has_syn
 
 
@@ -206,7 +209,7 @@ def main() -> int:
         for f in files:
             data = extract(f)
             if data is None:
-                print(f"skip（无可重放内容）: {f.name}")
+                print(f"skip (nothing replayable): {f.name}")
                 continue
             target = out_dir / f"{data['car']}__{f.stem}.jsonl"
             with target.open("w", encoding="utf-8") as w:
@@ -217,9 +220,9 @@ def main() -> int:
                     w.write(json.dumps(e, ensure_ascii=False) + "\n")
                 for tid in data["tunnelTxIds"]:
                     w.write(json.dumps({"layer": "tunnel", "dir": "tx", "id": int(tid, 16)}, ensure_ascii=False) + "\n")
-            print(f"wrote {target.name}（bt轮 {len(data['btRounds'])}，tunnel rx {len(data['tunnelRx'])}）")
+            print(f"wrote {target.name} (bt rounds {len(data['btRounds'])}, tunnel rx {len(data['tunnelRx'])})")
             written += 1
-    print(f"完成：{written} 个 fixture → {out_dir}")
+    print(f"done: {written} fixture(s) → {out_dir}")
     return 0
 
 

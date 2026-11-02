@@ -1,864 +1,864 @@
-# 无线 CarPlay 发送端协议笔记
+# Wireless CarPlay Sender Protocol Notes
 
-> 本项目目标：Android 手机扮演 iPhone（CarPlay 发送端），连接 CarPlay 车机（接收端）。
-> 本笔记综合四个本地参考仓库（`reference/`：DiPlay、xcertplay、catplay、
-> carplay-wifi-extractor，已 gitignore）与公开逆向资料整理。
-> **测试台接收端实际使用 DiPlay**（xcertplay 的衍生版，`reference/DiPlay/`）；
-> 代码精读路径多为 xcertplay（`reference/xcertplay/`），两份源码同源、协议逻辑一致。
-> 标注 ✅ 的为已在参考代码中逐行确证；标注 ❓ 的为待验证项。
+> Project goal: an Android phone plays the iPhone (CarPlay sender) and connects to a CarPlay head unit (receiver).
+> These notes combine four local reference repositories (`reference/`: DiPlay, xcertplay, catplay,
+> carplay-wifi-extractor, all gitignored) with public reverse-engineering material.
+> **The test-bench receiver actually used is DiPlay** (a derivative of xcertplay, `reference/DiPlay/`);
+> most close code reading was done in xcertplay (`reference/xcertplay/`); the two codebases share a common origin and identical protocol logic.
+> Items marked ✅ have been confirmed line by line in reference code; items marked ❓ are still to be verified.
 
-## 1. 角色与认证模型
+## 1. Roles and Authentication Model
 
-| | 接收端（车机角色） | 发送端（iPhone 角色，本项目） |
+| | Receiver (head unit role) | Sender (iPhone role, this project) |
 |---|---|---|
-| 承担者 | 奥迪车机 / DiPlay（测试台） | 本 app |
-| 需要苹果签名身份 | ✅ 是（MFi 证书/芯片，被手机验证） | ❌ 否 |
-| 验证对方身份 | ❌ 否（单向认证，Oligo DEF CON 2025 证实） | 可选（测试台阶段直接跳过） |
+| Played by | Audi head unit / DiPlay (test bench) | This app |
+| Needs an Apple-signed identity | ✅ Yes (MFi certificate/chip, verified by the phone) | ❌ No |
+| Verifies the peer's identity | ❌ No (one-way authentication, confirmed by Oligo at DEF CON 2025) | Optional (skipped entirely in the test-bench phase) |
 
-**关键结论**：iAP2 认证是单向的——手机验证车机的 MFi 凭据（0xAA00 段挑战应答），
-车机完全信任手机自报的验证结果。因此发送端**不需要**任何 Apple 签名材料，
-DiPlay 从 Carlinkit 固件提取的证书对发送端无用（那是接收端身份）。
+**Key conclusion**: iAP2 authentication is one-way — the phone verifies the head unit's MFi credentials (0xAA00-range challenge/response),
+and the head unit fully trusts the verification result the phone reports. The sender therefore **needs no** Apple signing material at all;
+the certificate DiPlay extracted from Carlinkit firmware is useless to a sender (it is a receiver identity).
 
-## 2. 分层结构（自底向上）
-
-```
-┌────────────────────────────────────────────────────────┐
-│ AirPlay 主会话: RTSP 风格控制 + H.264/H.265 流 + HID     │  Phase 2
-│   承载: WiFi TCP（车机 AirPlay 端口, 来自 0x4301）        │
-├────────────────────────────────────────────────────────┤
-│ mDNS/Bonjour: 车机广播 _airplay._tcp；手机广播           │
-│   _carplay-ctrl._tcp（车机反连此端口）                    │
-├────────────────────────────────────────────────────────┤
-│ iAP2 控制会话 (CSM): 0x4040 分帧 + TLV 参数体            │  Phase 1
-├────────────────────────────────────────────────────────┤
-│ iAP2 链路层: FF55 SYN / FF5A 数据帧 + 校验和             │  Phase 1
-│   承载: 蓝牙 RFCOMM（无线）/ USB bulk（有线,已排除）      │
-└────────────────────────────────────────────────────────┘
-```
-
-## 3. 链路层（✅ 已按 xcertplay Iap2LinkEngine.kt 精读修正，2026-10-08）
-
-数据帧头（大端，9 字节 + 载荷 + 载荷校验和）：
+## 2. Layering (Bottom Up)
 
 ```
-FF 5A | u16 总长 | u8 控制 | u8 seq | u8 ack | u8 会话ID | u8 头校验和 | 载荷 | u8 载荷校验和
+┌────────────────────────────────────────────────────────────────┐
+│ AirPlay main session: RTSP-style control + H.264/H.265 + HID   │  Phase 2
+│   Transport: Wi-Fi TCP (head unit AirPlay port, from 0x4301)   │
+├────────────────────────────────────────────────────────────────┤
+│ mDNS/Bonjour: head unit advertises _airplay._tcp; phone        │
+│   advertises _carplay-ctrl._tcp (head unit connects back here) │
+├────────────────────────────────────────────────────────────────┤
+│ iAP2 control session (CSM): 0x4040 framing + TLV params        │  Phase 1
+├────────────────────────────────────────────────────────────────┤
+│ iAP2 link layer: FF55 SYN / FF5A data frames + checksums       │  Phase 1
+│   Transport: BT RFCOMM (wireless) / USB bulk (wired, excluded) │
+└────────────────────────────────────────────────────────────────┘
 ```
 
-**Phase 1 实测修正（与早期笔记的差异）**：
-- 握手不是「FF55 控制帧」：双方互发 marker `FF 55 02 00 EE 10`，然后发同步包
-  （FF5A 帧，control=0x80，载荷 = 参数协商结构 `>BBHHHBB` + 会话描述符×3）
-- **无线模式下手机是同步发起方**：配件（openWireless, initiateNegotiation=false）
-  只发 marker 等手机先发同步包；双方收到同步包即回 ACK，协商态收到 ACK 进 NORMAL
-- **会话 ID 是 10（控制）/11（EA）/12（文件传输）**，不是 Oligo 笔记里的 0/1/2
-  （那可能是蓝牙承载变体；以能互通 DiPlay 的 10/11/12 为准）
-- 序号 u8 回绕，初始 99；数据帧 control=0x40（捎带 ACK）
-- 控制位：SYNC=0x80, ACK=0x40, EAK=0x20, RST=0x10
-- 校验和 = 字节和的补码（含校验和在内 mod 256 == 0），头/载荷各一个
-- 无线参数参考（DiPlay/xcertplay WIRELESS_LINK_CONFIG）：maxOutgoing=4,
-  controlSessionVersion=2, 保留 ACK（有线用 zero-ack 模式）
-- CSM 大帧按对端协商的 maxLength 分片，接收端经 CSM 解析器重组
+## 3. Link Layer (✅ corrected after close reading of xcertplay Iap2LinkEngine.kt, 2026-10-08)
 
-**本项目代码**: `app/src/main/java/.../iap2/Iap2LinkEngine.kt`（完整状态机，已回环测试）
-
-## 4. CSM 分帧与 TLV（✅ xcertplay `iap2/wire/Iap2CsmFramer.kt`）
+Data frame header (big-endian, 9 bytes + payload + payload checksum):
 
 ```
-帧:   0x4040 | u16 总长(含头6字节) | u16 消息ID | 体       （大端, 无校验和）
-参数: u16 参数总长(含4字节头) | u16 参数ID | 值             （体 = 参数序列）
-字符串: NUL 结尾 UTF-8；嵌套参数 = 参数值为子参数序列
+FF 5A | u16 total length | u8 control | u8 seq | u8 ack | u8 session ID | u8 header checksum | payload | u8 payload checksum
 ```
 
-**本项目代码**: `app/src/main/java/.../iap2/Iap2Csm.kt`（帧编解码 + 增量解析器 + TLV 构建器已实现）
+**Phase 1 on-device corrections (differences from earlier notes)**:
+- The handshake is not an "FF55 control frame": both sides exchange the marker `FF 55 02 00 EE 10`, then send a sync packet
+  (FF5A frame, control=0x80, payload = parameter negotiation struct `>BBHHHBB` + 3× session descriptors)
+- **In wireless mode the phone initiates sync**: the accessory (openWireless, initiateNegotiation=false)
+  only sends the marker and waits for the phone to send the sync packet first; each side ACKs on receiving a sync packet, and a negotiating side enters NORMAL on receiving the ACK
+- **Session IDs are 10 (control) / 11 (EA) / 12 (file transfer)**, not the 0/1/2 from the Oligo notes
+  (that may be the Bluetooth transport variant; the 10/11/12 that interoperates with DiPlay is authoritative)
+- Sequence numbers are u8 and wrap, initial value 99; data frames use control=0x40 (piggybacked ACK)
+- Control bits: SYNC=0x80, ACK=0x40, EAK=0x20, RST=0x10
+- Checksum = two's complement of the byte sum (sum including the checksum mod 256 == 0), one each for header and payload
+- Wireless parameter reference (DiPlay/xcertplay WIRELESS_LINK_CONFIG): maxOutgoing=4,
+  controlSessionVersion=2, ACKs retained (wired uses zero-ack mode)
+- Large CSM frames are fragmented according to the peer's negotiated maxLength and reassembled by the receiver's CSM parser
 
-## 5. 无线控制时序（✅ xcertplay `Iap2WirelessControlClient.kt` + extractor README）
+**Project code**: `app/src/main/java/.../iap2/Iap2LinkEngine.kt` (full state machine, loopback-tested)
 
-蓝牙 RFCOMM 建链（两设备需先系统级配对）后：
+## 4. CSM Framing and TLV (✅ xcertplay `iap2/wire/Iap2CsmFramer.kt`)
 
 ```
-配件 → 手机: FF55 SYN                          （链路层握手由谁发起 ❓ Phase 1 验证）
-手机 → 配件: StartIdentification      (0x1D00)
-配件 → 手机: IdentificationInformation (0x1D01)   车机身份 + 收发消息能力清单
-手机 → 配件: IdentificationAccepted    (0x1D02)
-配件 → 手机: MFi 认证序列              (0xAA00 段)  ← 手机侧可跳过校验 ❓细节待读
-手机 → 配件: RequestAccessoryWiFiConfiguration (0x5702)   ← **必备**：四个独立
-                                                   实现都声明它；车机漏声明也要发
-                                                   （见 §5b / §9j）
-配件 → 手机: AccessoryWiFiConfiguration (0x5703)   明文 TLV: SSID/密码/信道/安全类型
-   （安全类型: 0=None 1=WEP 2=WPA/WPA2 3=WPA3过渡 4=WPA3）
-手机加入车机热点 → mDNS 解析 _airplay._tcp
-手机 → 配件: CarPlayAvailability      (0x4300)
-配件 → 手机: CarPlayStartSession      (0x4301)   无线参数 + 车机IP + AirPlay端口
-                                                    + deviceIdentifier + 公钥 + sourceVersion
-手机 → 配件: WirelessCarPlayUpdate    (0x4E0D)   通知无线 CarPlay 可用
-手机 → 配件: DeviceTransportIdentifier(0x4E0E)   蓝牙/USB 标识，收到后配件重发 0x5703
-配件 → 手机: StartHID                 (0x6800)   Phase 2: 触摸回传通道
-手机 → 配件: DeviceHIDReport          (0x6801)   应答
+Frame:  0x4040 | u16 total length (incl. 6-byte header) | u16 message ID | body   (big-endian, no checksum)
+Param:  u16 param total length (incl. 4-byte header) | u16 param ID | value     (body = sequence of params)
+String: NUL-terminated UTF-8; nested param = param value is a sequence of sub-params
 ```
 
-0x1D01 身份参数布局（发送端需要解析；字段 id → 含义）：
+**Project code**: `app/src/main/java/.../iap2/Iap2Csm.kt` (frame encode/decode + incremental parser + TLV builder implemented)
+
+## 5. Wireless Control Sequence (✅ xcertplay `Iap2WirelessControlClient.kt` + extractor README)
+
+After the Bluetooth RFCOMM link is established (the two devices must first be paired at the system level):
+
+```
+Accessory → Phone: FF55 SYN                        (who initiates the link handshake ❓ to verify in Phase 1)
+Phone → Accessory: StartIdentification      (0x1D00)
+Accessory → Phone: IdentificationInformation (0x1D01)   head unit identity + list of sent/received message capabilities
+Phone → Accessory: IdentificationAccepted    (0x1D02)
+Accessory → Phone: MFi authentication sequence (0xAA00 range)  ← phone side can skip verification ❓ details still to read
+Phone → Accessory: RequestAccessoryWiFiConfiguration (0x5702)   ← **mandatory**: all four independent
+                                                   implementations declare it; send it even if the head unit omits it
+                                                   (see §5b / §9j)
+Accessory → Phone: AccessoryWiFiConfiguration (0x5703)   plaintext TLV: SSID/password/channel/security type
+   (security type: 0=None 1=WEP 2=WPA/WPA2 3=WPA3 transition 4=WPA3)
+Phone joins the head unit hotspot → mDNS resolves _airplay._tcp
+Phone → Accessory: CarPlayAvailability      (0x4300)
+Accessory → Phone: CarPlayStartSession      (0x4301)   wireless params + head unit IP + AirPlay port
+                                                    + deviceIdentifier + public key + sourceVersion
+Phone → Accessory: WirelessCarPlayUpdate    (0x4E0D)   announces wireless CarPlay is available
+Phone → Accessory: DeviceTransportIdentifier(0x4E0E)   Bluetooth/USB identifier; accessory resends 0x5703 on receipt
+Accessory → Phone: StartHID                 (0x6800)   Phase 2: touch back-channel
+Phone → Accessory: DeviceHIDReport          (0x6801)   reply
+```
+
+0x1D01 identity parameter layout (the sender needs to parse it; field id → meaning):
 0=name, 1=modelIdentifier, 2=manufacturer, 3=serialNumber, 4=firmwareVersion,
-5=hardwareVersion, 6=发出的消息ID列表(u16[]), 7=接收的消息ID列表(u16[]),
-8=电源类型, 9=最大电流(mA), 10=EA协议组, 12=语言, 13=语言列表,
-16=USB传输组件(有线), 17=蓝牙传输组件(无线), 18=HID组件, 24=无线CarPlay组件(含SSID)。
+5=hardwareVersion, 6=list of sent message IDs (u16[]), 7=list of received message IDs (u16[]),
+8=power source type, 9=max current (mA), 10=EA protocol group, 12=language, 13=language list,
+16=USB transport component (wired), 17=Bluetooth transport component (wireless), 18=HID component, 24=wireless CarPlay component (incl. SSID).
 
-## 5b. 0x5702 是「必备但常被漏声明」——四个独立实现的外部佐证（2026-10-22）
+## 5b. 0x5702 Is "Mandatory but Often Undeclared" — External Evidence from Four Independent Implementations (2026-10-22)
 
-起因：0.1.13 在奥迪 MMI 3315 上从「能连」变成「连不上」。8b64147 把 WiFi 凭据
-分派写成「车机可收清单里没有 0x5702 就跳过旧协议」，而奥迪稀疏清单（发 2 项 /
-收 5 项）不含它。结果整轮一次 0x5702 都没发，车机 AirPlay 服务始终没起来
-（端口 7000 全程 ECONNREFUSED），4 轮会话每轮 8 秒自拆。
+Background: 0.1.13 went from "connects" to "won't connect" on the Audi MMI 3315. 8b64147 made Wi-Fi credential
+dispatch "skip the old protocol if 0x5702 is not in the head unit's receivable list", and Audi's sparse lists (sends 2 /
+receives 5) don't include it. As a result, not a single 0x5702 was sent the whole round, the head unit's AirPlay service never came up
+(port 7000 ECONNREFUSED throughout), and each of 4 sessions tore itself down after 8 seconds.
 
-**四个独立实现全部把 0x5702 列进「车机可接收」清单**，说明它是规范要求的必备项：
+**All four independent implementations list 0x5702 in the "head unit can receive" list**, showing it is a mandatory item required by the spec:
 
-| 项目 | 角色 | 证据位置 |
+| Project | Role | Evidence |
 |---|---|---|
-| catplay | 车机（rx gadget） | `catplay_carplay_rx_gadget/src/iap2_session.rs`：`(identity.wifi_ssid.is_some(), &[RequestAccessoryWiFiConfigurationInformation::PACKET_ID])` |
-| xcertplay | 车机 | `Iap2IdentificationClient.kt:315`：`WIRELESS_PHONE_MESSAGES = intArrayOf(0x4e0d, 0x4e0e, 0x5702)` |
-| amineross/showcase | 车机（越狱 iPhone） | `source/carplay_bt.m` 的 `msgs_recv[]` 含 `0x5702 /* RequestAccessoryWiFiConfigInfo */` |
-| wiomoc/iap2 | 车机（Python） | `iap2/__main__.py` 的 `msgs_recv` 含 `RequestAccessoryWiFiConfigurationInformation` |
+| catplay | Head unit (rx gadget) | `catplay_carplay_rx_gadget/src/iap2_session.rs`: `(identity.wifi_ssid.is_some(), &[RequestAccessoryWiFiConfigurationInformation::PACKET_ID])` |
+| xcertplay | Head unit | `Iap2IdentificationClient.kt:315`: `WIRELESS_PHONE_MESSAGES = intArrayOf(0x4e0d, 0x4e0e, 0x5702)` |
+| amineross/showcase | Head unit (jailbroken iPhone) | `msgs_recv[]` in `source/carplay_bt.m` includes `0x5702 /* RequestAccessoryWiFiConfigInfo */` |
+| wiomoc/iap2 | Head unit (Python) | `msgs_recv` in `iap2/__main__.py` includes `RequestAccessoryWiFiConfigurationInformation` |
 
-**推论**：缺席的 0x5702 只能说明「清单不完整」，不能反证「不支持」。现实车机常漏写
-（奥迪 MMI 3315 就是），而它们对未声明消息照常处理——同日日志里 `0x4e0d/0x4e0b/0x4e0e`
-三条不在清单里，车机逐条 ACK 到位（seq 107→ack=107、110→ack=110、113→ack=113）。
+**Inference**: an absent 0x5702 only shows that "the list is incomplete"; it does not prove "unsupported". Real head units often omit it
+(the Audi MMI 3315 does), yet they handle undeclared messages normally — in the same day's log, `0x4e0d/0x4e0b/0x4e0e`
+were not in the list, and the head unit ACKed each of them (seq 107→ack=107, 110→ack=110, 113→ack=113).
 
-现行分派只认 `ReceiverProfile.wifiGen`：`NEW`（两清单合计 ≥10 项仍无 0x57xx，
-BMW iD9 形态）才跳过 0x5702；`LEGACY` 与 `UNKNOWN` 一律发，等待窗口 1.5s
-（奥迪八轮实测应答 122/136/166/166/198/246/266/368ms）。
+Current dispatch only trusts `ReceiverProfile.wifiGen`: only `NEW` (both lists total ≥10 items and still no 0x57xx,
+BMW iD9 style) skips 0x5702; `LEGACY` and `UNKNOWN` always send it, with a 1.5s wait window
+(Audi responses over eight measured rounds: 122/136/166/166/198/246/266/368ms).
 
-### 0x5703 的两个发送时机（传输通知前 / 后）
+### The Two Send Points for 0x5703 (Before / After the Transport Notification)
 
-`amineross/showcase` 的 `send_accessory_wifi_config(phase)` 区分 pre-/post-transport：
+`send_accessory_wifi_config(phase)` in `amineross/showcase` distinguishes pre-/post-transport:
 `mfi_auth_succeeded → wireless_carplay_connecting_seen → transport_notification_seen
-→ wifi_config_sent_post_transport`（最多重发 5 次）。它的注释记录了一个反例：
+→ wifi_config_sent_post_transport` (resent up to 5 times). Its comments record a counter-example:
 
-> iPhone8,1 / iOS 15.8.3 上，对端在 0x4E0E **之前**就请求 WiFi 配置，旧代码因此先发
-> 了 0x4301，然后网络阶段再也没启动过。
+> On iPhone8,1 / iOS 15.8.3, the peer requested the Wi-Fi configuration **before** 0x4E0E, so the old code sent
+> 0x4301 first, and then the network phase never started.
 
-即顺序本身不一定致命（我们 10-19/10-20 的奥迪日志里 0x5703 早于 0x4e0d/0x4e0e
-到达也照常成功），但**时序敏感是真的**。我们的保活泵对重发的 0x5702 会重新应答
-（`Iap2SenderSession` 的 `wifi` 缓存），与 showcase 的重发语义一致。
+So the order itself is not necessarily fatal (in our 10-19/10-20 Audi logs 0x5703 arrived before 0x4e0d/0x4e0e
+and things still worked), but **the timing sensitivity is real**. Our keep-alive pump re-answers a resent 0x5702
+(the `wifi` cache in `Iap2SenderSession`), consistent with showcase's resend semantics.
 
-### 两种端点发现流（Apple 官方口径）
+### The Two Endpoint Discovery Flows (Apple's Official Description)
 
-`harman-f/mhi2_altscreen_carplay` 的 `docs/research/mhi2-native-wireless-2026-10/
-11_CONNECTION_FLOW_VARIANTS.md` 整理了 Apple 的两套设计：
+`docs/research/mhi2-native-wireless-2026-10/11_CONNECTION_FLOW_VARIANTS.md` in `harman-f/mhi2_altscreen_carplay`
+summarizes Apple's two designs:
 
 ```
-A. 经典流（WWDC 2017）：
-   配对 → BT iAP2（识别+MFi+传输标识）→ 凭据交换 → WLAN 关联
-   → Bonjour browse/resolve → Controller Connect → 会话 → iAP2 交接 → ACTIVE
+A. Classic flow (WWDC 2017):
+   pairing → BT iAP2 (identification + MFi + transport identifier) → credential exchange → WLAN association
+   → Bonjour browse/resolve → Controller Connect → session → iAP2 handoff → ACTIVE
 
-B. 简化流（WWDC 2023，iOS 14+）：
-   iAP2 里直接交换 IP 端点 + TCP 端口 → 直接建会话 → 安全+传输交接 → ACTIVE
-   （**不需要 Bonjour**，支持 WPA3-only）
+B. Simplified flow (WWDC 2023, iOS 14+):
+   exchange IP endpoint + TCP port directly in iAP2 → establish session directly → security + transport handoff → ACTIVE
+   (**no Bonjour needed**, supports WPA3-only)
 ```
 
-同一文档强调 Apple 的显式警告：**WLAN 关联之后、CarPlay/iAP 交接到达预期状态之前，
-蓝牙/iAP2 都不能拆**。这条正是「每轮 8 秒自拆链 = 永远等不到邀请」的理论依据——
-真 iPhone 实录里车机入网后约 21 秒才发 `StartSessionHost`。
+The same document stresses Apple's explicit warning: **after WLAN association and before the CarPlay/iAP handoff reaches the expected state,
+Bluetooth/iAP2 must not be torn down**. This is exactly the theoretical basis for "self-teardown every 8 seconds = never receiving the invitation" —
+in real iPhone recordings the head unit only sends `StartSessionHost` about 21 seconds after joining the network.
 
-对应实现：奥迪 MMI 3315 的 TXT `features=0x4040280,0x61`（bit37 CARPLAY_CONTROL
-与 bit38 HK_PAIRING 均置位）、`srcvers=450.14.2`，实际走 A（mDNS）+ B（0x4301）混合。
+Corresponding implementation: the Audi MMI 3315's TXT `features=0x4040280,0x61` (bit37 CARPLAY_CONTROL
+and bit38 HK_PAIRING both set), `srcvers=450.14.2`; in practice it uses a mix of A (mDNS) + B (0x4301).
 
-### 一条与 iOS 18 相关的反例（不适用于奥迪，但要知道）
+### A Counter-Example Related to iOS 18 (Doesn't Apply to Audi, but Worth Knowing)
 
-`amineross/showcase` 故意**不声明** 0x4301，注释解释了原因：
+`amineross/showcase` deliberately **does not declare** 0x4301; its comments explain why:
 
-> iPhone 16 Pro / iOS 18 rejects identification if 0x4301 is in msgs_sent。
-> 而 0x4300 不能加进 msgs_recv——iPhone 校验 0x4300/0x4301 是强制配对，
-> 缺 0x4301 就拒绝。所以整个 0x43xx 路径在 iOS 18+ 上是堵死的。
+> iPhone 16 Pro / iOS 18 rejects identification if 0x4301 is in msgs_sent.
+> And 0x4300 cannot be added to msgs_recv — the iPhone validates that 0x4300/0x4301 are a mandatory pair,
+> and rejects if 0x4301 is missing. So the whole 0x43xx path is blocked on iOS 18+.
 
-奥迪并不受此限：它的发送清单里明确有 `0x4301`（日志 `车机发送清单(2)=0x4301 0xea03`）。
-**相反，它愿意声明 0x4301 却漏掉 0x5702**——进一步说明清单是不完整，不是能力受限。
-改这条相关代码时，别把 showcase 的「iOS 18 限制」当成所有车机的通则。
+Audi is not subject to this: its send list explicitly contains `0x4301` (log `head unit send list(2)=0x4301 0xea03`).
+**On the contrary, it is willing to declare 0x4301 yet omits 0x5702** — further evidence that the list is incomplete, not that capabilities are limited.
+When changing related code, don't treat showcase's "iOS 18 restriction" as a general rule for all head units.
 
-## 6. mDNS/Bonjour（✅ xcertplay `network/CarPlayBonjour.kt`）
+## 6. mDNS/Bonjour (✅ xcertplay `network/CarPlayBonjour.kt`)
 
-**车机侧**广播 `_airplay._tcp`，TXT 记录：
+The **head unit side** advertises `_airplay._tcp`, with TXT record:
 
 ```
 deviceid=AA:BB:CC:DD:EE:FF   features=0x44540380,0x61   flags=0x4
 model=...  srcvers=...  protovers=1.1
-pi=<配对ID>  pk=<ed25519公钥hex>
+pi=<pairing ID>  pk=<ed25519 public key hex>
 ```
 
-**手机侧**广播 `_carplay-ctrl._tcp`（TXT: `id=<蓝牙MAC>`），车机 resolve 后**反连**该端口
-作为控制通道（即 iAP2 控制会话从蓝牙迁移到 WiFi TCP 的载体）。
-测试台（DiPlay，沿袭 xcertplay）偏好 link-local IPv6，回落 IPv4——实测 ctrl 探测
-源地址为 `fe80::…%wlan0`。
+The **phone side** advertises `_carplay-ctrl._tcp` (TXT: `id=<Bluetooth MAC>`); after resolving it the head unit **connects back** to that port
+as the control channel (i.e. the carrier that moves the iAP2 control session from Bluetooth onto Wi-Fi TCP).
+The test bench (DiPlay, inherited from xcertplay) prefers link-local IPv6 and falls back to IPv4 — the measured ctrl probe
+source address is `fe80::…%wlan0`.
 
-## 7. 蓝牙 RFCOMM（✅ xcertplay `CarPlayController.kt:1591,1963`）
+## 7. Bluetooth RFCOMM (✅ xcertplay `CarPlayController.kt:1591,1963`)
 
-- iPhone（发送端）监听 SDP 服务：UUID `00000000-deca-fade-deca-deafdecacafe`
-- 配件端 UUID：`00000000-deca-fade-deca-deafdecacaff`
-- 测试台（DiPlay）的连接策略：扫描**已配对**的 `PHONE_SMART` 设备 → 逐个连接上述 UUID
-- 测试台因此只需：两台手机系统级配对 → 本 app 监听 → 备用机 DiPlay 回连
+- iPhone (sender) listens on the SDP service: UUID `00000000-deca-fade-deca-deafdecacafe`
+- Accessory UUID: `00000000-deca-fade-deca-deafdecacaff`
+- Test bench (DiPlay) connection strategy: scan **paired** `PHONE_SMART` devices → connect to the UUID above one by one
+- The test bench therefore only needs: the two phones paired at system level → this app listens → DiPlay on the spare phone connects back
 
-## 8. AirPlay 主会话（Phase 2，仅索引）
+## 8. AirPlay Main Session (Phase 2, Index Only)
 
-- 参考实现：catplay `carplay/catplay_carplay/src/carplay_tx/`（发送端 1959 行）+
-  `screen/tx/`（视频发送会话）+ `rtp/record/`（发送侧 RTP）+ `pairing/pairing_helper_tx.rs`
-- 加密：ed25519 PairSetup/PairVerify（HomeKit 风格）+ RTP AES/ChaCha
-  （接收端参考实现在 xcertplay/DiPlay `airplay/PairSetup.kt`/`PairVerify.kt`/`Srp6a.kt`）
-- 视频：H.264/H.265，AVCC/AnnexB 封装转换（catplay `video/`）
-- 时钟：NTP 风格 timing 端口 + RTCP（catplay `clock/`）
-- ❓ FairPlay/流加密细节无公开规格，靠 catplay 源码 + ludwig-v 解密固件对照
+- Reference implementation: catplay `carplay/catplay_carplay/src/carplay_tx/` (sender, 1959 lines) +
+  `screen/tx/` (video sending session) + `rtp/record/` (sender-side RTP) + `pairing/pairing_helper_tx.rs`
+- Encryption: ed25519 PairSetup/PairVerify (HomeKit style) + RTP AES/ChaCha
+  (receiver reference implementation in xcertplay/DiPlay `airplay/PairSetup.kt`/`PairVerify.kt`/`Srp6a.kt`)
+- Video: H.264/H.265, AVCC/AnnexB encapsulation conversion (catplay `video/`)
+- Clock: NTP-style timing port + RTCP (catplay `clock/`)
+- ❓ No public spec for FairPlay/stream encryption details; rely on catplay source + ludwig-v's decrypted firmware for comparison
 
-## 8b. 音频通道（✅ 已实现：手机 → 车机主音频流）
+## 8b. Audio Channel (✅ Implemented: Phone → Head Unit Main Audio Stream)
 
-**协商**：在已加密的 RTSP 会话上 `SETUP`，body = `streams:[{type:100(主音频),
-streamConnectionID, audioFormat:<位图>, audioType:"media"}]`；接收端应答
-`{type:100, dataPort:<UDP>, controlPort:<UDP>, streamConnectionID}`。
-- 音频格式位图（catplay `msg/streams.rs` AudioFormat）：PCM 48k 立体声 = `1<<15`、
-  AAC-LC 48k 立体声 = `1<<23`；当前实现用 PCM 48k 立体声（协议基线）
-- 流密钥与视频同规则：`HKDF(shared, "DataStream-Salt<音频 connId>", "DataStream-Output-Encryption-Key")`
-- 音频流 ID 独立（用自己的 connId），与视频互不影响
+**Negotiation**: `SETUP` on the already-encrypted RTSP session, body = `streams:[{type:100 (main audio),
+streamConnectionID, audioFormat:<bitmap>, audioType:"media"}]`; the receiver replies
+`{type:100, dataPort:<UDP>, controlPort:<UDP>, streamConnectionID}`.
+- Audio format bitmap (catplay `msg/streams.rs` AudioFormat): PCM 48k stereo = `1<<15`,
+  AAC-LC 48k stereo = `1<<23`; the current implementation uses PCM 48k stereo (protocol baseline)
+- Stream keys follow the same rule as video: `HKDF(shared, "DataStream-Salt<audio connId>", "DataStream-Output-Encryption-Key")`
+- The audio stream ID is independent (uses its own connId) and does not affect video
 
-**线格式**（RTP over UDP；接收端 DiPlay `AudioStream.kt` 解密路径证实）：
+**Wire format** (RTP over UDP; confirmed by the receiver DiPlay's `AudioStream.kt` decryption path):
 ```
-[RTP 头 12B][ChaCha20-Poly1305 密文 + 16B tag][8B 小端 nonce]
-头: v=2 | M=0 PT=<stream type=100> | seq u16BE | timestamp u32BE(累计样本帧) | ssrc u32BE
-AAD = 头字节 4..12（timestamp+ssrc 的 BE 表示，catplay "modern AAD"）
-nonce(12B) = 4 字节零 + 尾 8 字节小端计数（逐包递增）
+[RTP header 12B][ChaCha20-Poly1305 ciphertext + 16B tag][8B little-endian nonce]
+Header: v=2 | M=0 PT=<stream type=100> | seq u16BE | timestamp u32BE (cumulative sample frames) | ssrc u32BE
+AAD = header bytes 4..12 (BE representation of timestamp+ssrc, catplay "modern AAD")
+nonce (12B) = 4 zero bytes + trailing 8-byte little-endian counter (incremented per packet)
 ```
-- 每包 512 样本帧（48000Hz 立体声 16bit = 2048B 负载，整包 ~2084B；
-  接收端 UDP 收包缓冲 4096B，安全）
-- 采集：`AudioPlaybackCapture`（Android 10+，需要 MediaProjection 授权 + RECORD_AUDIO）
-- 当前为单向（媒体/导航下车机）；麦克风上行（通话）未实现
+- 512 sample frames per packet (48000Hz stereo 16-bit = 2048B payload, ~2084B per packet;
+  the receiver's UDP receive buffer is 4096B, safe)
+- Capture: `AudioPlaybackCapture` (Android 10+, requires MediaProjection permission + RECORD_AUDIO)
+- Currently one-way (media/navigation down to the head unit); microphone uplink (calls) not implemented
 
-**本项目代码**：`audio/AudioSender.kt`（采集+封包+UDP）、
-`airplay/AirPlayClient.runAudioStream()`（协商）、单测 `AudioSenderTest`（解密回环）
+**Project code**: `audio/AudioSender.kt` (capture + packetization + UDP),
+`airplay/AirPlayClient.runAudioStream()` (negotiation), unit test `AudioSenderTest` (decryption round-trip)
 
-## 9. 真车（奥迪 MIB3）Phase 3 风险清单
+## 9. Real Car (Audi MIB3) Phase 3 Risk List
 
-1. catplay 兼容表记录：Audi/Porsche HARMAN MIB2「角色切换后对 dongle 断电重启」——
-   但那是 USB 有线方向；无线方向未知
-2. 用户车机为 MIB3（2020 款后），无公开兼容记录，全新未知
-3. 真车首次配对：需要先有「系统级蓝牙配对」，奥迪车机通常要求先插 USB 才开放无线
-   配对（❓ 关键未知项：能否纯蓝牙触发。DiPlay 测试台无此限制）
-4. WifiNetworkSpecifier 不支持程序化传入密码（系统弹窗输入）——0x5703 拿到密码后
-   无法静默入网，需要用户每次确认（❓ Phase 3 实测影响）
+1. catplay's compatibility table records: Audi/Porsche HARMAN MIB2 "cuts power to and reboots the dongle after the role switch" —
+   but that is the wired USB direction; the wireless direction is unknown
+2. The user's head unit is MIB3 (2020 model year and later), with no public compatibility record — completely unknown
+3. First pairing on a real car: "system-level Bluetooth pairing" must exist first; Audi head units usually require plugging in USB before opening wireless
+   pairing (❓ key unknown: whether it can be triggered via Bluetooth alone. The DiPlay test bench has no such restriction)
+4. WifiNetworkSpecifier does not support passing the password programmatically (entered in a system dialog) — even after 0x5703 provides the password,
+   the network cannot be joined silently and the user must confirm every time (❓ impact to be measured in Phase 3)
 
-## 9b. 奥迪 MIB3 实测记录（2026-10-09，Audi_MMI_6318 / MHI3_AS_AU_P3801）
+## 9b. Audi MIB3 Field Notes (2026-10-09, Audi_MMI_6318 / MHI3_AS_AU_P3801)
 
-车机识别为 `AUDI 3260 / DELPHI / CL37_MIB3H_AU_AS_G4x_2200910PROD`。
-蓝牙 SDP 广播配件端 iAP2 服务 `…decacaff`（系统级蓝牙配对后即可连，无需 USB 触发）。
+The head unit identifies as `AUDI 3260 / DELPHI / CL37_MIB3H_AU_AS_G4x_2200910PROD`.
+Bluetooth SDP advertises the accessory-side iAP2 service `…decacaff` (connectable right after system-level Bluetooth pairing, no USB trigger needed).
 
-**实测通过（逐字节对照修正后）**：
+**Passed on device (after byte-by-byte comparison and fixes)**:
 
-| 环节 | 结果 | 关键点 |
+| Step | Result | Key points |
 |---|---|---|
-| RFCOMM 双向 | ✅ | 车机也主动回连（约 60s 一轮）；双向都工作 |
-| 链路协商 | ✅ | 车机发 SYN 声明会话表 `{1:control, 2:EA}` → 手机必须**ACK + 原样回显该表**；之后 CSM 走**1 号会话**（发 10 号被静默丢弃，链路层照常 ACK——极具迷惑性） |
-| 识别 | ✅ | 0x1D01 收到 |
-| MFi | ✅ | **20 字节挑战**（32B 静默但不打断链）；0xAA03 签名 132B |
-| WiFi 凭据 | ✅ | 0x5702 → 0x5703 ssid=Audi_MMI_6318_5GHz ch=149 psk 明文 |
-| ctrl 邀请 | ✅ | 车机在 WiFi 上发现手机 `_carplay-ctrl._tcp` 后 `GET /ctrl-int/1/connect`（死锁关键：手机必须**在 0x5703 到达时立即**绑 WiFi + 广播带**真实蓝牙 MAC** 的 ctrl） |
-| mDNS 端点 | ✅ | 车机 `_airplay._tcp` 上线于 10.174.189.1:7000，TXT: `features=0x4040280,0x61 srcvers=320.17.7 flags=0x4 model=AUDI 3260 deviceid=54:64:DE:5E:51:B0`（**无 pk 字段**） |
-| AirPlay /info | ✅ | RTSP 200/455（在线） |
-| pair-setup | ❌ 403 | 车机不接受匿名 SRP 配对（iAP2 已完成 MFi 信任） |
-| pair-verify 快路径 | ⏳ | 403 后转「已配对设备」pair-verify，待实测 |
+| RFCOMM both directions | ✅ | The head unit also connects back on its own (about every 60s); both directions work |
+| Link negotiation | ✅ | The head unit sends SYN declaring session table `{1:control, 2:EA}` → the phone must **ACK + echo the table verbatim**; afterwards CSM uses **session 1** (sending on session 10 is silently dropped while the link layer still ACKs — extremely misleading) |
+| Identification | ✅ | 0x1D01 received |
+| MFi | ✅ | **20-byte challenge** (32B is silent but doesn't break the link); 0xAA03 signature 132B |
+| Wi-Fi credentials | ✅ | 0x5702 → 0x5703 ssid=Audi_MMI_6318_5GHz ch=149 psk in plaintext |
+| ctrl invitation | ✅ | After discovering the phone's `_carplay-ctrl._tcp` on Wi-Fi the head unit sends `GET /ctrl-int/1/connect` (deadlock key: the phone must bind Wi-Fi + advertise ctrl with the **real Bluetooth MAC** **immediately when 0x5703 arrives**) |
+| mDNS endpoint | ✅ | Head unit `_airplay._tcp` comes up at 10.174.189.1:7000, TXT: `features=0x4040280,0x61 srcvers=320.17.7 flags=0x4 model=AUDI 3260 deviceid=54:64:DE:5E:51:B0` (**no pk field**) |
+| AirPlay /info | ✅ | RTSP 200/455 (online) |
+| pair-setup | ❌ 403 | The head unit does not accept anonymous SRP pairing (iAP2 has already established MFi trust) |
+| pair-verify fast path | ⏳ | After 403, switch to "already paired device" pair-verify; to be tested |
 
-**2026-10-11 复测补充（新增两条经证实的坑）**：
+**2026-10-11 retest addendum (two newly confirmed pitfalls)**:
 
-1. **奥迪对 32B MFi 挑战的行为不稳定**——10-09 是「静默不断链」，10-11 实测
-   车机在 32B 挑战后 ~0.4s **直接拆链**（此前 0xAA01 证书 912B 已正常收到，
-   说明识别阶段全对）。若每次会话都从 32B 撞起会反复断链。
-   修复：`Iap2SenderSession` 记「被拒档位」，本进程内后续会话直接跳过该长度。
-2. **客户端线程泄漏会让车机错乱**（10-11 排查发现 3 个 `iap2-bt-client` 并发运行）：
-   `BluetoothSocket.connect()` 是阻塞调用，旧代码成功后才登记 socket，
-   `stop()` 关不到正在 connect 的 socket → 线程滞留；用户再次「启动连接」后
-   旧线程因共享 `running=true` 复活 → 多个 RFCOMM 会话并发连车机，
-   车机表现为随机拆链/时序错乱。修复：世代号（start/stop 递增，过期线程自杀）+
-   connect 前登记 socket（保证 stop() 能 close 打断阻塞）。
+1. **Audi's behavior on a 32B MFi challenge is inconsistent** — on 10-09 it was "silent, link stays up"; on 10-11 the
+   head unit **tore down the link outright** ~0.4s after the 32B challenge (the 0xAA01 certificate, 912B, had already been received fine,
+   showing the identification phase was entirely correct). If every session starts by hitting 32B, the link keeps dropping.
+   Fix: `Iap2SenderSession` remembers "rejected lengths" and later sessions in the same process skip that length.
+2. **Client thread leaks confuse the head unit** (on 10-11 we found 3 `iap2-bt-client` threads running concurrently):
+   `BluetoothSocket.connect()` is a blocking call, and the old code only registered the socket after success, so
+   `stop()` couldn't close a socket that was mid-connect → thread lingered; after the user hit "Start connection" again,
+   the old thread revived because of a shared `running=true` → multiple RFCOMM sessions connected to the head unit concurrently,
+   which showed up as random link teardowns / scrambled timing. Fix: generation counter (incremented on start/stop, stale threads exit themselves) +
+   register the socket before connect (so stop() can close it and interrupt the blocking call).
 
-**奥迪与测试台（DiPlay）的差异清单**：
-1. 0x4301 因**车机型号/固件而异，不能按「奥迪」一概而论**：
-   - **Audi MMI 6318（2026-10-09/11 全通那台）**：不发 0x4301——识别帧声明可收
-     `0x4e0c 0x4e09 0x4e0d 0x4e0e 0x5702 0xea00 0xea01`、可发 `0x5703 0xea03`；
-     AirPlay 端点只能走 WiFi 的 mDNS `_airplay._tcp`（10.174.189.1:7000）
-   - **Audi MMI 9310（AUDI 5810 / DELPHI，2026-10-18 用户实测）**：识别帧
-     **明确声明会发 0x4301**（`车机发送清单(2)=0x4301 0xea03`），但实际在 Phase 1
-     结束后 **2 分 35 秒**才发（车机侧 CarPlay 窗口刚开）；此时我们的 3s 等待窗口、
-     4s ctrl 邀请窗口、120s 配对窗口**全部已过期**。若把它当心跳丢弃，车机等 15s
-     无人连入即拆 RFCOMM → 用户看到「连上后自动断开」。
-     另：该车热点网关是 `10.174.189.254`（不是 .1），网关兜底端口 7000 仍 Connection
-     refused——是否端口不同未定谳（该轮 mDNS 全程未发现 `_airplay._tcp`），
-     下一轮日志的 `iap2 0x4301 原始体` 可确认它是否携带 IPv4/端口。
-   - 结论：**0x4301 必须作为生命周期事件处理**（迟到也要解析并触发配对），
-     超时日志不得写「该车机不发」。
-2. 车机**主动发 SYN**（测试台等手机发）；会话表 {1,2} 且必须回显
-3. **MFi 挑战长度双兼容（重要坑，2026-10-10 踩过）**：
-   - DiPlay（Carlinkit AuthV3 EC 身份）：**只接受精确 32B**，收到 20B **直接断链**
-     （实测 70~350ms 断；表现为「连不上 DiPlay + 挑战期间链路断开」）；应答 ~0.2s
-   - Audi MIB3：对 32B 静默（不断链）或拆链（10-11 实测两种都出现过），对 20B 秒答
-   - 结论：顺序必须 **32B(3s) → 20B(6s) → 16B(3s)** 回退。反过来 20B 优先会打死 DiPlay；
-     对奥迪的 32B 拆链波动由「被拒档位」记忆自愈（见下方 2026-10-11 补充）
-4. `pair-setup` 被 403（测试台接受 3939 SRP）
-5. AirPlay 端口窗口式开放（ctrl 邀请接受后短暂开放；未受邀时 Connection refused）
-6. **不要断 BT 控制会话**（测试台 hack 的前提是 DiPlay 重建栈；奥迪会在断链后拆掉
-   整轮 AirPlay 窗口）
+**Differences between Audi and the test bench (DiPlay)**:
+1. 0x4301 **varies by head unit model/firmware and cannot be generalized as "Audi"**:
+   - **Audi MMI 6318 (the one fully working on 2026-10-09/11)**: does not send 0x4301 — the identification frame declares it can receive
+     `0x4e0c 0x4e09 0x4e0d 0x4e0e 0x5702 0xea00 0xea01` and can send `0x5703 0xea03`;
+     the AirPlay endpoint can only be found via mDNS `_airplay._tcp` over Wi-Fi (10.174.189.1:7000)
+   - **Audi MMI 9310 (AUDI 5810 / DELPHI, user test on 2026-10-18)**: the identification frame
+     **explicitly declares it will send 0x4301** (`head unit send list(2)=0x4301 0xea03`), but it actually arrives only
+     **2 min 35 s** after Phase 1 ends (just as the head unit's CarPlay window opens); by then our 3s wait window,
+     4s ctrl invitation window and 120s pairing window have **all expired**. If it's discarded as a heartbeat, the head unit waits 15s
+     for nobody to connect and then tears down RFCOMM → the user sees "connects, then disconnects automatically".
+     Also: this car's hotspot gateway is `10.174.189.254` (not .1), and gateway fallback port 7000 still gives Connection
+     refused — whether the port differs is undetermined (mDNS never discovered `_airplay._tcp` during that round);
+     the `iap2 0x4301 raw body` line in the next log can confirm whether it carries IPv4/port.
+   - Conclusion: **0x4301 must be handled as a lifecycle event** (parse it and trigger pairing even when it arrives late),
+     and timeout logs must not claim "this head unit doesn't send it".
+2. The head unit **sends SYN itself** (the test bench waits for the phone); session table {1,2} and it must be echoed
+3. **Dual-compatible MFi challenge length (important pitfall, hit on 2026-10-10)**:
+   - DiPlay (Carlinkit AuthV3 EC identity): **accepts only exactly 32B**; on 20B it **drops the link immediately**
+     (measured drop within 70~350ms; symptom: "can't connect to DiPlay + link drops during the challenge"); answers in ~0.2s
+   - Audi MIB3: silent on 32B (link stays up) or tears down the link (both observed on 10-11), answers 20B instantly
+   - Conclusion: the order must fall back **32B(3s) → 20B(6s) → 16B(3s)**. Trying 20B first instead kills DiPlay;
+     Audi's 32B teardown variability self-heals via the "rejected length" memory (see the 2026-10-11 addendum above)
+4. `pair-setup` gets 403 (the test bench accepts 3939 SRP)
+5. The AirPlay port opens in a window (briefly open after the ctrl invitation is accepted; Connection refused when not invited)
+6. **Do not drop the BT control session** (the test-bench hack relies on DiPlay rebuilding its stack; Audi tears down
+   the entire AirPlay window after the link drops)
 
-**设备身份（0x4300/0x4E0E/ctrl TXT id 用）**：真实蓝牙 MAC 必须动态解析
-（Android 11+ 应用层只能拿到占位 `02:00:00:00:00:00`）。
-Shizuku shell 侧读法：`content query --uri content://settings/secure/bluetooth_address`。
+**Device identity (used by 0x4300/0x4E0E/ctrl TXT id)**: the real Bluetooth MAC must be resolved dynamically
+(on Android 11+ the app layer only gets the placeholder `02:00:00:00:00:00`).
+Read it from the Shizuku shell side via: `content query --uri content://settings/secure/bluetooth_address`.
 
-## 9c. 奥迪 MIB3 全通记录（2026-10-11，Phase 3-C 验收）
+## 9c. Audi MIB3 Fully Working (2026-10-11, Phase 3-C Acceptance)
 
-iAP2 → AirPlay 配对 → 视频推流 → 触摸回传 → 虚拟屏注入，全链路可交互。
-本日在 §9b 基础上攻克的最后一批协议差异：
+iAP2 → AirPlay pairing → video streaming → touch back-channel → virtual display injection, interactive end to end.
+The last batch of protocol differences cracked that day on top of §9b:
 
-| 环节 | 根因 | 修复 |
+| Step | Root cause | Fix |
 |---|---|---|
-| pair-setup/pair-verify 403 | 配对请求缺 Apple 标识头 | `Content-Type: application/pairing+tlv8` + `X-Apple-HKP: 2`（pair-verify 再加 `X-Apple-PD: 1`）；M1 加 Method=None(0)+State(1) TLV |
-| 屏幕流 SETUP 400 | ① timingPort=0 ② features 只提 videoPlayback（接收端算交集得空） ③ 缺资源声明 ④ 身份自报用车机版本 | TimingServer（32B RTCP NTP，pt=0xD2 请求/0xD3 应答，回显 t3+本地单调钟）；CONTROLLER_FEATURES 完整清单（uiContext/viewAreas/…共 14 项）；SETUP 前发 modesChanged（resourceID 1/2 entity=1）；UA/sourceVersion=iPhone 自报 566.25.21 + osName/osBuild 等全字段 |
-| 会话 ~10s 被拆 | 缺双心跳 | keepAlive UDP 4B ping →车机 keepAlivePort（10s）；POST /feedback 空体（1s）。两者独立看门狗 |
-| 触摸无报文（一） | 车机命令路径错 | 命令必须发**事件通道 socket** 上的 POST /command（Events 密钥、独立 CSeq、fire-and-forget）；RTSP 控制连接上的 200 是假确认 |
-| 触摸无报文（二） | 未武装 HID | SETUP 后对 /info hidDevices[].uuid 逐个发 hidSetInputMode {hidInputMode:0, uuid}；**奥迪 uuid 是字符串 "0"/"1"**（DiPlay 是整数） |
-| 触摸无报文（三） | 事件通道是双向 RTSP | 每条来向请求立即回 RTSP/1.0 200 OK（加密）；不应答→车机塞 3 条就断通道（「能滑一下」） |
-| 触摸坐标 | 奥迪 HID 描述符 | uuid=1 eso_touchScreen：5 字节 `[tip 1bit][X u16LE][Y u16LE]`，X≤1412/Y≤654=屏幕分辨率绝对坐标；uuid=0 是 Consumer 媒体键（非触摸） |
-| 虚拟 iAP2 链路 | iAPSendMessage 语义 | 事件通道 iAPSendMessage.data = 链路层字节流；marker=DETECT，车机（客户端）每 200ms 重发、等服务器回一次 DETECT 后发 SYN；服务器重发 DETECT 会把客户端打回 Detecting |
-| 0x4E0E 杀 BT 链路 | 车机接受但不 ACK | sendControl(awaitAck=false) 发后不管；0x4300 同改 |
-| mDNS 抓错目标 | 手机开热点共享 | 按「本机 IP /24 前缀」过滤 _airplay._tcp 结果；mDNS 失败时网关兜底（网关=车机，端口 7000） |
+| pair-setup/pair-verify 403 | Pairing requests missing Apple identification headers | `Content-Type: application/pairing+tlv8` + `X-Apple-HKP: 2` (plus `X-Apple-PD: 1` for pair-verify); add Method=None(0)+State(1) TLVs to M1 |
+| Screen stream SETUP 400 | ① timingPort=0 ② features proposed only videoPlayback (receiver's intersection is empty) ③ missing resource declaration ④ identity self-reported with the head unit's version | TimingServer (32B RTCP NTP, pt=0xD2 request/0xD3 reply, echoes t3 + local monotonic clock); full CONTROLLER_FEATURES list (uiContext/viewAreas/… 14 items total); send modesChanged before SETUP (resourceID 1/2 entity=1); UA/sourceVersion = iPhone self-reported 566.25.21 + osName/osBuild and all other fields |
+| Session torn down after ~10s | Missing both heartbeats | keepAlive UDP 4B ping → head unit keepAlivePort (10s); POST /feedback with empty body (1s). Two independent watchdogs |
+| No touch reports (1) | Wrong head unit command path | Commands must be sent as POST /command on the **event channel socket** (Events key, separate CSeq, fire-and-forget); a 200 on the RTSP control connection is a false acknowledgement |
+| No touch reports (2) | HID not armed | After SETUP, send hidSetInputMode {hidInputMode:0, uuid} for each /info hidDevices[].uuid; **Audi's uuid is the string "0"/"1"** (DiPlay uses integers) |
+| No touch reports (3) | The event channel is bidirectional RTSP | Reply to every incoming request immediately with RTSP/1.0 200 OK (encrypted); without replies → the head unit queues 3 and then drops the channel ("can swipe once") |
+| Touch coordinates | Audi HID descriptor | uuid=1 eso_touchScreen: 5 bytes `[tip 1bit][X u16LE][Y u16LE]`, X≤1412/Y≤654 = absolute coordinates at screen resolution; uuid=0 is Consumer media keys (not touch) |
+| Virtual iAP2 link | iAPSendMessage semantics | Event channel iAPSendMessage.data = link-layer byte stream; marker=DETECT, the head unit (client) resends every 200ms and sends SYN after the server answers DETECT once; a server resending DETECT knocks the client back to Detecting |
+| 0x4E0E kills the BT link | Head unit accepts but doesn't ACK | sendControl(awaitAck=false) fire-and-forget; same change for 0x4300 |
+| mDNS picks the wrong target | Phone sharing its own hotspot | Filter _airplay._tcp results by "local IP /24 prefix"; on mDNS failure fall back to the gateway (gateway = head unit, port 7000) |
 
-**调试流程坑**：`adb install -r` 不杀旧进程（旧 dex 继续跑，修复「无效」）；
-NsdManager unregisterService 异步（复用 listener 报 already in use，每次注册新建）；
-ctrl mDNS 注册必须发生在 bindProcessToNetwork **之后**（组播跟随进程绑定网络）。
+**Debug-workflow pitfalls**: `adb install -r` doesn't kill the old process (old dex keeps running, fix "doesn't work");
+NsdManager unregisterService is asynchronous (reusing the listener reports already in use; create a new one for each registration);
+ctrl mDNS registration must happen **after** bindProcessToNetwork (multicast follows the process-bound network).
 
-## 9d. WinPlay（Windows 接收端）实测记录（2026-10-19）
+## 9d. WinPlay (Windows Receiver) Field Notes (2026-10-19)
 
-WinPlay 是开源 Windows 无线 CarPlay 接收端（`reference/WinPlay`，GPL-3.0，Node + TS，
-接收端角色）。用户用荣耀做发送端连它（日志 `logs/cardeck/xiaomi-winplay.log`）：
-iAP2 → WiFi → mDNS → 配对全通，卡在会话级 SETUP。
+WinPlay is an open-source Windows wireless CarPlay receiver (`reference/WinPlay`, GPL-3.0, Node + TS,
+receiver role). A user connected to it using an Honor phone as the sender (log `logs/cardeck/xiaomi-winplay.log`):
+iAP2 → Wi-Fi → mDNS → pairing all worked, stuck at the session-level SETUP.
 
-**根因：会话级 SETUP 的 `deviceID` 必须等于接收端选中的那台 iPhone 的蓝牙 MAC。**
+**Root cause: the session-level SETUP's `deviceID` must equal the Bluetooth MAC of the iPhone selected on the receiver.**
 
-- WinPlay 启动时用 `cfg.targetBluetooth`（用户在 Windows 上选定的已配对 iPhone）
-  设置过滤器：`stack.deviceFilter = id => normalize(id) === normalize(cfg.targetBluetooth)`
-  （`reference/WinPlay/src/engine/run.ts:64`）。
-- 会话级 SETUP 里 `dict.deviceID` 对不上（或缺字段）直接回 **403**
-  （`src/engine/protocol/cpStack.ts:696-699`）；`RECORD` 在设备验收前同样 403。
-- 我们此前发的是 catplay 的写死假值 `ff:ee:dd:cc:bb:aa`
-  （旧注释「车机不校验」只在 Audi/DiPlay 成立）。
-- 状态行 `RTSP/1.0 403 OK` 是 WinPlay 的指纹：它的 `STATUS_TEXT` 表没有 403 条目，
-  `buildResponse` 回退成 `OK`（`src/engine/protocol/rtspMessage.ts`）。看到「403 OK」
-  优先怀疑设备过滤，而不是通用 RTSP 实现差异。
-- 失败后的表象是「连上后约 45 秒自动断开」：发送端不再发请求，接收端等视频超时
-  （`armVideoDeadline` 45s）后拆链路。发送端应在 SETUP 非 200 时主动 close，别静默等待。
+- On startup WinPlay sets a filter from `cfg.targetBluetooth` (the paired iPhone the user selected on Windows):
+  `stack.deviceFilter = id => normalize(id) === normalize(cfg.targetBluetooth)`
+  (`reference/WinPlay/src/engine/run.ts:64`).
+- If `dict.deviceID` in the session-level SETUP doesn't match (or is missing), it replies **403** immediately
+  (`src/engine/protocol/cpStack.ts:696-699`); `RECORD` is likewise 403 before the device is accepted.
+- We were previously sending catplay's hard-coded fake value `ff:ee:dd:cc:bb:aa`
+  (the old comment "the head unit doesn't validate it" only holds for Audi/DiPlay).
+- The status line `RTSP/1.0 403 OK` is WinPlay's fingerprint: its `STATUS_TEXT` table has no 403 entry, so
+  `buildResponse` falls back to `OK` (`src/engine/protocol/rtspMessage.ts`). On seeing "403 OK",
+  suspect device filtering first rather than a generic RTSP implementation difference.
+- After the failure the symptom is "connects, then disconnects automatically after about 45 seconds": the sender stops sending requests, and the receiver waits for video until it times out
+  (`armVideoDeadline` 45s) and tears down the link. The sender should actively close when SETUP is not 200 instead of waiting silently.
 
-对照 Audi/DiPlay：两者都不校验 SETUP 的 deviceID，所以这个字段长期没有被发现。
-本项目已改为复用 `DeviceIdentity` 解析出的**真实本机蓝牙 MAC**（与 0x4300/0x4E0E
-一致），占位值 `02:00:00:00:00:00` 只在 Shizuku 未就绪时兜底，并在 403 日志里
-明确提示「接收端请选择该地址」。
+Compared with Audi/DiPlay: neither validates the SETUP deviceID, which is why this field went unnoticed for so long.
+This project now reuses the **real local Bluetooth MAC** resolved by `DeviceIdentity` (consistent with 0x4300/0x4E0E);
+the placeholder `02:00:00:00:00:00` is only a fallback when Shizuku isn't ready, and the 403 log
+explicitly says "select this address on the receiver".
 
-**WinPlay 的其他特性（对本项目有用的）**：
+**Other WinPlay characteristics (useful to this project)**:
 
-- 端口固定 TCP 17000；`_airplay._tcp` TXT 与 iPhone 同构
-  （`srcvers=950.7.1 features=0x44540380,0x61 flags=0x4`）。
-- 会话级 SETUP 只在 `keepAliveLowPower` 为真时才开 keepAlive 端口。
-- 事件通道/流 SETUP/音频协商路径与 DiPlay 基本一致（`_setupScreen`/`_setupAudio`），
-  同样按 `DataStream-Salt<id>` 派生流密钥，可作为接收端行为的第三份交叉验证。
+- Fixed TCP port 17000; `_airplay._tcp` TXT has the same shape as an iPhone's
+  (`srcvers=950.7.1 features=0x44540380,0x61 flags=0x4`).
+- The session-level SETUP only opens a keepAlive port when `keepAliveLowPower` is true.
+- The event channel / stream SETUP / audio negotiation paths are essentially the same as DiPlay's (`_setupScreen`/`_setupAudio`),
+  and stream keys are derived the same way via `DataStream-Salt<id>`, so it can serve as a third cross-check of receiver behavior.
 
-**顺带修掉的 bplist 编码 bug**：`BinaryPlist.encodeInt` 原先按**无符号**范围选宽度，
-但 bplist 整数是**有符号**的——35449（0x8A79）被写成 2 字节，Apple 侧解析成 int16
--30087。临时端口（timingPort/eventPort/dataPort 常落在 32768..65535）都会踩到；
-WinPlay 用 BigInt 无符号读取所以不受影响，Audi 是否受影响未知（视频曾正常，但不能
-排除它忽略了错误的 timingPort）。现已改为按 `Byte/Short/Int` 有符号范围选宽度，
-回归测试覆盖 0/127/128/255/256/32767/32768/35449/65535/65536。
+**A bplist encoding bug fixed along the way**: `BinaryPlist.encodeInt` used to pick the width by **unsigned** range,
+but bplist integers are **signed** — 35449 (0x8A79) was written as 2 bytes and parsed on the Apple side as int16
+-30087. Ephemeral ports (timingPort/eventPort/dataPort often fall in 32768..65535) all hit this;
+WinPlay reads with an unsigned BigInt so it's unaffected; whether Audi is affected is unknown (video used to work, but we can't
+rule out that it ignored the wrong timingPort). Width is now chosen by the signed `Byte/Short/Int` ranges,
+with regression tests covering 0/127/128/255/256/32767/32768/35449/65535/65536.
 
-## 9e. 奥迪 MMI 3315 会话 10 秒被拆：三条心跳缺一不可（2026-10-19）
+## 9e. Audi MMI 3315 Session Torn Down at 10 Seconds: All Three Heartbeats Are Required (2026-10-19)
 
-用户实测日志 `logs/cardeck/CarDeck-log-20261019-081700.txt`：iAP2 → MFi → 热点 →
-配对 → SETUP → RECORD → 视频 30fps 稳定推流，**RECORD 后 10.17~10.23s 整轮被 reset**，
-两轮时序逐毫秒重合（不是随机网络问题）。
+User log `logs/cardeck/CarDeck-log-20261019-081700.txt`: iAP2 → MFi → hotspot →
+pairing → SETUP → RECORD → video streaming steadily at 30fps, **then the whole session is reset 10.17~10.23s after RECORD**;
+the timing of two rounds matches to the millisecond (not a random network problem).
 
-**根因一：UDP keepAlive 间隔与车机看门狗等长。** 我们每 10s 发一次（catplay
-`KeepAliveClient::PING_INTERVAL`），而车机看门狗也是 10s。日志里 ping #2 距 #1
-恰好 10.001s，随后 213~247ms 内被拆——`Thread.sleep` 的毫秒抖动让心跳永远晚到
-deadline 1ms。catplay 的 10s 只适用于它自家接收端；对真车必须留余量。
-改为 **5s**（`AirPlayClient.KEEPALIVE_INTERVAL_MS`）。
+**Root cause 1: the UDP keepAlive interval equals the head unit's watchdog.** We sent one every 10s (catplay
+`KeepAliveClient::PING_INTERVAL`), and the head unit's watchdog is also 10s. In the log ping #2 is
+exactly 10.001s after #1, followed by teardown within 213~247ms — millisecond jitter in `Thread.sleep` makes the heartbeat always arrive 1ms
+past the deadline. catplay's 10s only works for its own receiver; real cars need headroom.
+Changed to **5s** (`AirPlayClient.KEEPALIVE_INTERVAL_MS`).
 
-**根因二：缺屏幕流内 keepAlive 帧。** catplay 在**视频持续推流时仍然每秒**向
-屏幕数据口写一帧 keepAlive（`ScreenTransmitSession::create_keep_alive`，
-`DEFAULT_KEEP_ALIVE = 1s`）——它不是视频流量的备份，而是接收端屏幕上独立的存活
-信号。我们从未发过。帧格式（`reference/catplay/.../screen/screen_frame.rs`）：
+**Root cause 2: missing in-stream keepAlive frames on the screen stream.** catplay writes a keepAlive frame to the
+screen data port **every second even while video is streaming continuously** (`ScreenTransmitSession::create_keep_alive`,
+`DEFAULT_KEEP_ALIVE = 1s`) — it is not a backup for video traffic but an independent liveness
+signal for the receiver's screen. We had never sent one. Frame format (`reference/catplay/.../screen/screen_frame.rs`):
 
 ```
-128B 明文头: u32LE body 长度 | u8 opcode | 3B 小参数 | 15 × 8B 参数
-opcode 2 = KeepAlive（空体）
-opcode 5 = KeepAliveWithBody（/info.keepAliveSendStatsAsBody=true 时；
+128B plaintext header: u32LE body length | u8 opcode | 3B small params | 15 × 8B params
+opcode 2 = KeepAlive (empty body)
+opcode 5 = KeepAliveWithBody (when /info.keepAliveSendStatsAsBody=true;
            body = bplist{txUsageAvg, encoderCurrentFPS, sentFramesAvg,
-                        queuedFramesAvg, lossAvg}，
-           params[14] 后 4 字节 = body 长度 f32 LE）
+                         queuedFramesAvg, lossAvg},
+           last 4 bytes of params[14] = body length as f32 LE)
 ```
 
-**keepAlive 帧是明文**——catplay 的 `ScreenFrameCodec::encode_composite` 只对
-`opcode == VideoFrame` 加密，所以 keepAlive 不消耗 ChaCha 帧 nonce。我们按此实现，
-并在 `VideoSender` 的编码器出帧循环里按 1s 节流发送。
+**keepAlive frames are plaintext** — catplay's `ScreenFrameCodec::encode_composite` only encrypts
+`opcode == VideoFrame`, so keepAlive doesn't consume a ChaCha frame nonce. We implement it the same way,
+sending it throttled to 1s inside `VideoSender`'s encoder output loop.
 
-**三条心跳相互独立**：UDP keepAlive（5s，keepAlivePort） + RTSP /feedback（1s，
-控制通道） + 屏幕流 keepAlive 帧（1s，视频数据口）。此前只实现了前两条，
-`docs` §9c 里记的「补双心跳」只在 MMI 6318 上够用。
+**The three heartbeats are independent**: UDP keepAlive (5s, keepAlivePort) + RTSP /feedback (1s,
+control channel) + screen stream keepAlive frame (1s, video data port). Previously only the first two were implemented;
+the "add both heartbeats" recorded in `docs` §9c was only sufficient on the MMI 6318.
 
-**音频采集全零（未解决，与拆链无关）**：`AUDIO: 采集样本 非零0% 峰值=0` 连续两轮。
-候选原因按概率：当时无媒体在播（会前只有一条旧记录）、音频被路由到车机蓝牙
-A2DP（PlaybackCapture 抓不到蓝牙输出）、或目标应用禁止播放捕获。
+**Audio capture all zeros (unresolved, unrelated to the teardown)**: `AUDIO: capture samples nonzero 0% peak=0` two rounds in a row.
+Candidate causes by likelihood: no media was playing at the time (only one old entry before the session), audio was routed to the head unit's Bluetooth
+A2DP (PlaybackCapture cannot capture Bluetooth output), or the target app disallows playback capture.
 
-**MFi 挑战长度的车机差异（本机实测补充）**：MMI 3315 对 20B **静默 6.0 秒**
-（15.605 发出 → 21.604 判定无应答），32B 在 0.64 秒回签名（22.247 收到 0xAA03）。
-这 6 秒属于每次连接都要付的固定成本，除非按车记住偏好。现已实现
-`MfiLengthMemory`：按 0x1D01 身份（name+model+manufacturer）持久化
-「成功 / 静默 / 被拒」三种结局，命中成功档位直接首选；静默档位重试窗口压到 1.5s。
-注意这与 §9b/§9c 的记录并不矛盾——**不同年款/固件的车机偏好相反**，MMI 6318
-认 20B 且对 32B 会拆链，所以基线顺序仍按接收端类型选择，记忆只做覆盖。
+**Per-head-unit MFi challenge length differences (additional on-device findings)**: the MMI 3315 is **silent for 6.0 seconds** on 20B
+(sent at 15.605 → judged unanswered at 21.604), while 32B returns a signature in 0.64 seconds (0xAA03 received at 22.247).
+Those 6 seconds are a fixed cost on every connection unless the preference is remembered per car. Now implemented as
+`MfiLengthMemory`: keyed by the 0x1D01 identity (name+model+manufacturer), it persists three outcomes —
+"success / silent / rejected" — and a successful length is tried first on a hit; the retry window for a silent length is reduced to 1.5s.
+Note this doesn't contradict §9b/§9c — **head units of different model years/firmware have opposite preferences**: the MMI 6318
+accepts 20B and tears down the link on 32B, so the baseline order is still chosen by receiver type, and the memory only overrides it.
 
-## 9f. 老车机（CarPlay 210.81 / 奥迪 4xxx 固件）连不上：按 catplay 对齐的六处差异（2026-10-19）
+## 9f. Older Head Units (CarPlay 210.81 / Audi 4xxx Firmware) Won't Connect: Six Differences Aligned with catplay (2026-10-19)
 
-用户反馈「奥迪软件版本 4 开头的（如 4851）连不上」。该代车机对应 catplay 分类中的
-**pre-HomeKit 接收端**（README 兼容表：Audi/Porsche ~2020 HARMAN MIB2/MHI2 即
-CarPlay 210.81）。对照 catplay 上游（本地引用停在 9-30，本次拉到 v0.17.0、39 个提交）
-逐项核对后，本项目有六处与之不一致，全部按 catplay 修正：
+Users reported "Audi software versions starting with 4 (e.g. 4851) won't connect". This generation of head unit corresponds to the
+**pre-HomeKit receiver** in catplay's classification (README compatibility table: Audi/Porsche ~2020 HARMAN MIB2/MHI2, i.e.
+CarPlay 210.81). After checking item by item against catplay upstream (our local copy stopped at 9-30; this time we pulled up to v0.17.0, 39 commits),
+this project differed from it in six places, all fixed to follow catplay:
 
-**① bplist 根对象必须位于字节 8（catplay 9ad3a7e）**。CarPlay 210.81 不读 trailer 的
-topObject，**直接按偏移 8 取根**；我们的编码器先编码子对象、最后才追加根容器，根默认在
-末尾。现象是车机收到合法 bplist 却解析不出字典（`SETUP plist decode failed` / 400）。
-修复：`BinaryPlist.encode` 末尾统一 `makeRootFirst` 重排并按偏移表修正（catplay 同算法），
-单测 `StreamFrameCipherTest.encodedPlistRootObjectStartsAtByteEight` 用 >255 对象的
-多字节偏移表锁住（小 plist 是单字节表、测不出该 bug）。
+**① The bplist root object must be at byte 8 (catplay 9ad3a7e)**. CarPlay 210.81 doesn't read the trailer's
+topObject and **takes the root directly at offset 8**; our encoder encodes child objects first and appends the root container last, so the root was at
+the end by default. The symptom is that the head unit receives a valid bplist but can't parse a dictionary out of it (`SETUP plist decode failed` / 400).
+Fix: `BinaryPlist.encode` now always ends with a `makeRootFirst` reorder and patches the offset table accordingly (same algorithm as catplay);
+the unit test `StreamFrameCipherTest.encodedPlistRootObjectStartsAtByteEight` locks it in using a multi-byte offset table with >255 objects
+(small plists use a single-byte table and can't catch the bug).
 
-**② 初始 SETUP 的请求 URI 用相对路径 `/setup`**（catplay `initial_setup` 同款）。
-旧实现发绝对 `rtsp://host:port/`。老固件对绝对 URI 敏感。
+**② The initial SETUP request URI uses the relative path `/setup`** (same as catplay `initial_setup`).
+The old implementation sent the absolute `rtsp://host:port/`. Old firmware is sensitive to absolute URIs.
 
-**③ 未配对会话必须带 `et=1`（NONE），屏幕流走 AES-128-CTR 零密钥**。
-catplay `ScreenFrameCodec::new` 注释：「There was never support for unencrypted screen
+**③ Unpaired sessions must carry `et=1` (NONE), and the screen stream uses AES-128-CTR with an all-zero key**.
+catplay `ScreenFrameCodec::new` comment: "There was never support for unencrypted screen
 sessions. ET = None maps to AES session where session_key before derivation is all
-zeroes.」即 `et=NONE` ≠ 明文视频，而是 **AES-128-CTR + 16 字节全零会话密钥**，
-密钥/IV = `SHA512("AirPlayStreamKey"/"AirPlayStreamIV" + connId(decimal) + sessionKey)[0..16]`。
-事件通道在未配对会话里也是**明文**（catplay `EventsServer::unencrypted`）。
-`et=NONE` 时音频没有共享密钥可派生 DataStream 输出密钥，直接跳过。
+zeroes." I.e. `et=NONE` ≠ plaintext video; it is **AES-128-CTR + a 16-byte all-zero session key**,
+with key/IV = `SHA512("AirPlayStreamKey"/"AirPlayStreamIV" + connId(decimal) + sessionKey)[0..16]`.
+The event channel is also **plaintext** in unpaired sessions (catplay `EventsServer::unencrypted`).
+With `et=NONE` there is no shared key to derive the DataStream output key for audio, so audio is skipped.
 
-**④ 屏幕数据帧的两种加密形态**。已配对（pair-verify）→ ChaCha20-Poly1305；
-未配对 → AES-128-CTR（无 tag、长度不变、密钥流**跨帧连续**，每帧新建实例会让第二帧起
-全部乱码）。只加密 `opcode=VideoFrame`，keepAlive/config 始终明文。
+**④ Two encryption modes for screen data frames**. Paired (pair-verify) → ChaCha20-Poly1305;
+unpaired → AES-128-CTR (no tag, length unchanged, the keystream is **continuous across frames** — creating a new instance per frame turns
+everything from the second frame on into garbage). Only `opcode=VideoFrame` is encrypted; keepAlive/config are always plaintext.
 
-**⑤ 控制通道密文帧的 MTU 是 1440**（catplay `AIRPLAY_CIPHER_MTU_MAX`）：
-单帧明文上限 = 1440 - 2B AAD - 16B tag = **1422**。旧实现 0x4000 会被严格车机
-判为协议违规（catplay 解码侧 `len > 1422` 直接 `PayloadTooBig`）。
+**⑤ The MTU for encrypted control-channel frames is 1440** (catplay `AIRPLAY_CIPHER_MTU_MAX`):
+max plaintext per frame = 1440 - 2B AAD - 16B tag = **1422**. The old implementation's 0x4000 would be treated by strict head units
+as a protocol violation (catplay's decode side does `len > 1422` → `PayloadTooBig` outright).
 
-**⑥ 只发 IPv4 地址的判据过窄**。奥迪 4xxx 的 `_airplay._tcp` / 0x4301 常只给
-**IPv6 链路本地**（`fe80::…%wlan0`）。旧代码到处用 `contains('.')` 判「有没有地址」，
-这类端点被判成不完整 → 白等 ctrl 邀请 → 退回「网关:7000」兜底（4xxx 的网关未必是
-`.1`、端口也未必 7000）→ 永远连不上。现统一走 `net/EndpointHosts`：
-IPv4 优先 → 全局 IPv6 → 链路本地 IPv6（补 scope），并且**视频/音频/事件通道复用
-配对真正连通的地址**（`AirPlayClient.activeHost`），不再各自回头挑 IPv4。
+**⑥ The "only IPv4 addresses count" check was too narrow**. Audi 4xxx `_airplay._tcp` / 0x4301 often only provide an
+**IPv6 link-local** address (`fe80::…%wlan0`). The old code used `contains('.')` everywhere to decide "is there an address",
+so these endpoints were judged incomplete → pointless wait for the ctrl invitation → fall back to "gateway:7000" (the 4xxx gateway isn't necessarily
+`.1`, nor the port necessarily 7000) → never connects. Everything now goes through `net/EndpointHosts`:
+IPv4 first → global IPv6 → link-local IPv6 (with scope added), and **the video/audio/event channels reuse the address
+that pairing actually connected to** (`AirPlayClient.activeHost`) instead of each going back and picking IPv4.
 
-**配套：用 TXT features 识别车机年代**。`_airplay._tcp` 的 `features=低32,高32`，
-bit38 = `HK_PAIRING_AND_ENCRYPT`。老车机不声明该位 → 直接 `skipPairing` 走明文会话，
-不再空跑 120s 配对窗口（这正是「一直连不上」的直接观感）。TXT 缺失/解析失败一律
-视为「未知」并保持旧路径，绝不误降级。若明文 SETUP 仍被拒（判断失误），再补做一次
-配对（catplay `handle_setup_result` 的 crypto 升级路径，窗口压到 30s）。
+**Related: use TXT features to identify the head unit's era**. `_airplay._tcp`'s `features=low32,high32`,
+bit38 = `HK_PAIRING_AND_ENCRYPT`. Older head units don't declare this bit → go straight to `skipPairing` and a plaintext session,
+instead of burning a 120s pairing window (which is exactly what "never connects" felt like). Missing TXT / parse failure is always
+treated as "unknown" and keeps the old path — never a false downgrade. If the plaintext SETUP is still rejected (misjudgment), pairing is
+done once more (catplay `handle_setup_result`'s crypto upgrade path, with the window reduced to 30s).
 
-**顺带对齐**：`_carplay-ctrl._tcp` 的 TXT `srcvers` 改为发送端版本号（566.25.21，
-此前误写车机侧 950.7.1）、服务名 iPhone；同时广播 `_device-info._tcp`（model=D84AP，
-catplay `DeviceInfoBonjourEntry`）；`GET /info` 带空 bplist 字典体 + plist Content-Type。
+**Aligned along the way**: the TXT `srcvers` of `_carplay-ctrl._tcp` changed to the sender version (566.25.21;
+previously mistakenly the head-unit-side 950.7.1), service name iPhone; also advertise `_device-info._tcp` (model=D84AP,
+catplay `DeviceInfoBonjourEntry`); `GET /info` carries an empty bplist dictionary body + plist Content-Type.
 
-## 9g. 奥迪 4851 实车「连上了但车机没反应」：VideoConfig 帧头缺两个字段（2026-10-19）
+## 9g. Audi 4851 Real Car "Connected but the Head Unit Doesn't React": VideoConfig Frame Header Missing Two Fields (2026-10-19)
 
-车友日志 `logs/cardeck/CarDeck-log-20261019-101353-all.txt`（小米 24129PN74C /
-Android 16，应用 **0.1.4**；车机 `Audi_MMI_3315` / `AUDI 5163` / DELPHI，
-`srcvers=450.14.2`，CarPlay `name=CarPlay`）。分析结果分两部分：
+A car owner's log `logs/cardeck/CarDeck-log-20261019-101353-all.txt` (Xiaomi 24129PN74C /
+Android 16, app **0.1.4**; head unit `Audi_MMI_3315` / `AUDI 5163` / DELPHI,
+`srcvers=450.14.2`, CarPlay `name=CarPlay`). The analysis has two parts:
 
-**A. 这次日志里确实每次都 10.2 秒被 reset**（六轮全部复现，与 §9e 同源）：
-事件通道建立 → 恰好 +10.2s `EVENT: 读取结束 - Connection reset`。该版本缺
-屏幕流内 keepAlive 帧、UDP keepAlive 还是 10s（与看门狗等长）。这两点已在
-**0.1.6** 修掉（§9e），所以本轮不必再改——但车友必须升级到 0.1.6 才会有完整会话。
+**A. In this log the session really is reset at 10.2 seconds every time** (reproduced in all six rounds, same root cause as §9e):
+event channel established → exactly +10.2s `EVENT: read ended - Connection reset`. That version lacked
+screen-stream keepAlive frames and the UDP keepAlive was still 10s (equal to the watchdog). Both were fixed in
+**0.1.6** (§9e), so nothing more to change this round — but the owner must upgrade to 0.1.6 to get a complete session.
 
-**B. 「app 显示已连接、车机没反应」的直接原因：VideoConfig 帧头缺字段。**
-0.1.6 之前的实现在发 VideoConfig 时只写 `body_size` + `opcode`，而 catplay
-`ScreenFrame::config` 还会写两项，Audi 这类严格解码器缺了就**整屏黑**：
+**B. The direct cause of "app shows connected, head unit doesn't react": the VideoConfig frame header is missing fields.**
+Before 0.1.6 the implementation only wrote `body_size` + `opcode` when sending VideoConfig, whereas catplay's
+`ScreenFrame::config` writes two more items; strict decoders like Audi's show **a completely black screen** without them:
 
-| 字段 | 头部位置 | 值 | 作用 |
+| Field | Header position | Value | Purpose |
 |---|---|---|---|
-| `small_param[1]` | 偏移 6 | `ScreenFlag::Encrypted (0x04)` | 声明后续 VideoFrame 是加密的；不声明就按明文 NAL 解 → 解码失败 |
-| `params[1]` | 偏移 16 | `(width, height)` 两个 **f32 LE** | 车机据此建立解码器画布尺寸 |
-| `params[0]` | 偏移 8..16 | 全 0 | config 不带 PTS（只有 VideoFrame 才写） |
+| `small_param[1]` | offset 6 | `ScreenFlag::Encrypted (0x04)` | Declares that subsequent VideoFrames are encrypted; without it they are decoded as plaintext NALs → decode failure |
+| `params[1]` | offset 16 | `(width, height)` as two **f32 LE** | The head unit uses this to set up the decoder canvas size |
+| `params[0]` | offset 8..16 | all 0 | config carries no PTS (only VideoFrame writes it) |
 
-**为什么测试台一直没暴露**：DiPlay `ScreenStream.onMessage` 只读 `body`（opcode 0/1）
-并从 avcC 里取分辨率，WinPlay `screenStream.ts` 同样只看 opcode 与 body——两者都不校验
-这几个头字段。真车（Audi DELPHI）按头字段建解码器，缺了就黑屏，且**会话、触摸、
-心跳全部正常**，日志里没有任何错误行——这是最难排查的一类。
+**Why the test bench never exposed it**: DiPlay's `ScreenStream.onMessage` only reads `body` (opcode 0/1)
+and takes the resolution from avcC; WinPlay's `screenStream.ts` likewise only looks at opcode and body — neither validates
+these header fields. A real car (Audi DELPHI) builds its decoder from the header fields and goes black without them, while **session, touch and
+heartbeats are all normal** and the log contains no error lines at all — the hardest kind of problem to track down.
 
-**A 与 B 的关系**：A 让会话活不过 10 秒（用户看到「闪一下就断」）；B 让会话活着时
-屏幕也是黑的（用户看到「显示已连接但车机没反应」）。两者独立，必须都修。
+**Relationship between A and B**: A keeps the session from surviving past 10 seconds (the user sees "flashes, then drops"); B makes the screen black
+even while the session is alive (the user sees "shows connected but the head unit doesn't react"). They are independent and both must be fixed.
 
-**诊断日志（本次新增）**：`VIDEO: ✓ VideoConfig 已发送 … flags=0x07 1412x654` 后面
-跟一行头部前 24 字节 hex——下次反馈可直接核对这些字段是否写对。
+**Diagnostic log (added this time)**: `VIDEO: ✓ VideoConfig sent … flags=0x07 1412x654` is followed by
+a line with the first 24 bytes of the header in hex — the next report can be checked directly for whether these fields are correct.
 
-## 9h. BMW 87866 卡在 iAP2 链路协商：SYN-ACK 序号重复（2026-10-19）
+## 9h. BMW 87866 Stuck in iAP2 Link Negotiation: Duplicate SYN-ACK Sequence Number (2026-10-19)
 
-日志 `logs/cardeck/CarDeck-log-20261019-103436.txt`（OnePlus PKR110 / Android 16，
-应用 0.1.6，车机 `BMW 87866` / MAC `9C:F5:5F:D0:44:09`）。**14 轮会话全部卡在链路层**：
-`iap2 link ready` 0 次、`0x1D00` 发送 0 次、`0x1D01` 收到 0 次。
+Log `logs/cardeck/CarDeck-log-20261019-103436.txt` (OnePlus PKR110 / Android 16,
+app 0.1.6, head unit `BMW 87866` / MAC `9C:F5:5F:D0:44:09`). **All 14 sessions stuck at the link layer**:
+`iap2 link ready` 0 times, `0x1D00` sent 0 times, `0x1D01` received 0 times.
 
-**帧统计（决定性证据）**：
+**Frame statistics (decisive evidence)**:
 
-| 方向 | 帧类型 | 次数 |
+| Direction | Frame type | Count |
 |---|---|---|
-| BMW → 手机 | `0x80` SYN | **133** |
-| BMW → 手机 | `0x40` ACK / 数据 | **0** |
-| 手机 → BMW | `0x40` 裸 ACK | 350 |
-| 手机 → BMW | `0xC0` SYN\|ACK | 14 |
+| BMW → phone | `0x80` SYN | **133** |
+| BMW → phone | `0x40` ACK / data | **0** |
+| Phone → BMW | `0x40` bare ACK | 350 |
+| Phone → BMW | `0xC0` SYN\|ACK | 14 |
 
-**根因一：SYN-ACK 复用 SYN 的序号。** 原始字节：
+**Root cause 1: SYN-ACK reuses the SYN's sequence number.** Raw bytes:
 
 ```
-我方 SYN    : ff 5a 00 1d 80 63 ...      seq = 0x63 (99)
-我方 SYN|ACK: ff 5a 00 1a c0 63 a1 ...   seq = 0x63 (99)   ← 撞号
+Our SYN    : ff 5a 00 1d 80 63 ...      seq = 0x63 (99)
+Our SYN|ACK: ff 5a 00 1a c0 63 a1 ...   seq = 0x63 (99)   ← collision
 ```
 
-`sentSequence` 只在 `drainSendWindow()` 发数据帧时自增，协商阶段从不递增。对端按
-`SYN.seq + 1` 校验回包（catplay `verify_neg_seq_ack`：`packet.seq == peer_seq + 1`），
-同序号被判重复帧丢弃。catplay 的 `NegotiationTx::SynAck` 用 `take_own_seq()` 自增。
-修复：`sendSynchronizationEcho` 消耗一个新序号；**同一个 SYN 的字节级重发保持幂等**
-（重放上一帧，不推进序号——DiPlay 隧道模式每 500ms 重发同一 SYN）。
+`sentSequence` is only incremented when `drainSendWindow()` sends data frames, never during negotiation. The peer validates the reply
+against `SYN.seq + 1` (catplay `verify_neg_seq_ack`: `packet.seq == peer_seq + 1`),
+so the same sequence number is judged a duplicate frame and dropped. catplay's `NegotiationTx::SynAck` increments via `take_own_seq()`.
+Fix: `sendSynchronizationEcho` consumes a new sequence number; **byte-level resends of the same SYN remain idempotent**
+(replay the previous frame without advancing the sequence — in DiPlay tunnel mode the same SYN is resent every 500ms).
 
-**根因二：只有第一条 SYN 得到 SYN|ACK。** 旧实现 `if (firstAdoption) sendSynchronizationEcho(...)`，
-其后每条 SYN 只回裸 ACK。而 BMW **每轮重试都用新序号重开协商**（161→191→40…，
-日志里单轮最多收到 36 条 SYN），永远等不到它要的回显。catplay `on_recv_neg_host`
-对每条 SYN 都发 SYN+ACK。修复：**每条纯 SYN（不带 ACK 位）都回一帧 SYN|ACK**。
+**Root cause 2: only the first SYN got a SYN|ACK.** The old implementation did `if (firstAdoption) sendSynchronizationEcho(...)`,
+and every subsequent SYN only got a bare ACK. But BMW **reopens negotiation with a new sequence number on every retry** (161→191→40…;
+a single round in the log received up to 36 SYNs), so it never got the echo it wanted. catplay's `on_recv_neg_host`
+sends SYN+ACK for every SYN. Fix: **reply with one SYN|ACK frame to every pure SYN (without the ACK bit)**.
 
-**踩坑：裸 ACK 会与 SYN|ACK 撞号。** 裸 ACK 用当前 `sentSequence`，而 SYN|ACK 会自增，
-下一次裸 ACK 就复用上一帧 SYN|ACK 的序号。故主机路径改为**只回 SYN|ACK**（它自带
-ACK 位与 ack 字段，裸 ACK 本就是冗余的；catplay 主机路径也只发 SYN+ACK）。
-代价：Audi 实测的「裸 ACK + SYN|ACK」帧序变为单帧 SYN|ACK——仍符合协议，
-但**需在 Audi 上复测确认**（最终 ACK 会回 100 而非 99，序号偏移一位是正常的）。
+**Pitfall: a bare ACK collides with SYN|ACK.** The bare ACK uses the current `sentSequence`, while SYN|ACK increments it,
+so the next bare ACK reuses the previous SYN|ACK's sequence number. Hence the host path now **only replies with SYN|ACK** (it carries its own
+ACK bit and ack field, so the bare ACK was redundant anyway; catplay's host path also only sends SYN+ACK).
+Cost: the measured Audi frame order "bare ACK + SYN|ACK" becomes a single SYN|ACK frame — still protocol-compliant,
+but **needs a retest on Audi to confirm** (the final ACK will be 100 instead of 99; a one-off sequence offset is normal).
 
-**踩坑：不能对所有带 SYN 位的帧都回 SYN|ACK。** 首版实现没区分 SYN 与 SYN|ACK，
-两个引擎互喂时形成无限乒乓（单测 `windowBacklogFlushesAfterAcknowledgement` 直接
-挂死并空转 CPU 55 秒，`jstack` 才看出）。判据必须是 `control and ACK == 0`。
+**Pitfall: you can't reply SYN|ACK to every frame with the SYN bit set.** The first version didn't distinguish SYN from SYN|ACK,
+and two engines feeding each other formed an infinite ping-pong (unit test `windowBacklogFlushesAfterAcknowledgement` hung
+outright, spinning the CPU for 55 seconds; only `jstack` revealed it). The criterion must be `control and ACK == 0`.
 
-**次要问题（本轮未改，建议后续处理）**：
-- 出站客户端与入站会话并行：16 次「BMW 处于蓝牙已连接状态（HFP/A2DP）——已断开」，
-  3 秒重试线程反复拆 HFP/A2DP，真车侧看是蓝牙被持续扰动；
-- 未指定目标时依次去连蓝牙耳机（`HUAWEI FreeBuds 4` / `FreeClip 2`），候选应只保留
-  声明了 CarPlay/iAP2 服务的设备；
-- 裸 ACK 500ms 一次（350 条），BMW 的 LSP 声明 `ackTimeout=3000ms`，按对端值发即可。
+**Secondary issues (not changed this round, suggested for follow-up)**:
+- Outbound client and inbound session run in parallel: 16× "BMW is Bluetooth-connected (HFP/A2DP) — disconnected";
+  the 3-second retry thread keeps tearing down HFP/A2DP, which from the car's side looks like Bluetooth being continuously disturbed;
+- With no target specified it also tries Bluetooth earbuds (`HUAWEI FreeBuds 4` / `FreeClip 2`) in turn; candidates should be limited to
+  devices that declare a CarPlay/iAP2 service;
+- A bare ACK every 500ms (350 of them), while BMW's LSP declares `ackTimeout=3000ms`; sending at the peer's value is enough.
 
-## 9i. 0.1.7 在奥迪 MMI 3315 上的回归：ctrl 广播身份字段被改（2026-10-19）
+## 9i. 0.1.7 Regression on Audi MMI 3315: ctrl Advertisement Identity Fields Changed (2026-10-19)
 
-日志 `logs/cardeck/CarDeck-log-20261019-141711.txt`（Xiaomi 15 / Android 16，0.1.7，
-同车同手机在 0.1.6 下可正常连接）。表象：**iAP2 全通、车机却不开 AirPlay 窗口**。
+Log `logs/cardeck/CarDeck-log-20261019-141711.txt` (Xiaomi 15 / Android 16, 0.1.7;
+the same car and phone connected fine under 0.1.6). Symptom: **iAP2 fully working, yet the head unit never opens the AirPlay window**.
 
-**已走通**：RFCOMM → `iap2 link ready` → 0x1D01 → MFi（32B，按记忆首选 0.58s）
-→ 0x5703（`Audi_MMI_3315_5GHz` ch149）→ 加入应用专属网络。车机 iAP2 层是活的
-（后续还发来 0xAE00）。
+**What worked**: RFCOMM → `iap2 link ready` → 0x1D01 → MFi (32B, preferred from memory, 0.58s)
+→ 0x5703 (`Audi_MMI_3315_5GHz` ch149) → joined the app-specific network. The head unit's iAP2 layer was alive
+(it later sent 0xAE00).
 
-**卡点（四项证据全为零）**：
+**Where it stuck (all four indicators zero)**:
 
-| 检查项 | 0.1.7（本次） | 0.1.6（同车可用） |
+| Check | 0.1.7 (this run) | 0.1.6 (works on the same car) |
 |---|---|---|
-| 0x4301 到达 | **0 次** | 0x4300 后 **0.65s** |
-| 车机 `GET /ctrl-int/1/connect` | **0 次** | 有 |
-| mDNS `_airplay._tcp` | **0 次** | `CarPlay -> 10.174.189.1:7000` |
-| 网关 `:7000` | 54s 全部 `ECONNREFUSED` | 立即可连 |
+| 0x4301 arrives | **0 times** | **0.65s** after 0x4300 |
+| Head unit `GET /ctrl-int/1/connect` | **0 times** | Yes |
+| mDNS `_airplay._tcp` | **0 times** | `CarPlay -> 10.174.189.1:7000` |
+| Gateway `:7000` | 54s of `ECONNREFUSED` throughout | Connectable immediately |
 
-**根因：ctrl 广播的 TXT `srcvers` 与实例名被我按 catplay 改了。** 0.1.6 是
-`name=sender` + `srcvers=950.7.1`（车机认）；0.1.7 改成 `name=iPhone` +
-`srcvers=566.25.21`（catplay 的发送端 SDK 版本），车机**连探测都不再发**。
-这两项是车机在 WiFi 上唯一能看到的手机身份，改动等价于换了一台设备。
-→ 已回退到 0.1.6 的值，并加测试 `CarPlayCtrlAdvertiserTest` 钉死（将来不要再
-"照 catplay 抄"）。
+**Root cause: I changed the ctrl advertisement's TXT `srcvers` and instance name to match catplay.** 0.1.6 used
+`name=sender` + `srcvers=950.7.1` (accepted by the head unit); 0.1.7 changed them to `name=iPhone` +
+`srcvers=566.25.21` (catplay's sender SDK version), and the head unit **stopped even probing**.
+These two items are the only phone identity the head unit can see on Wi-Fi; changing them is equivalent to swapping in a different device.
+→ Reverted to the 0.1.6 values, with test `CarPlayCtrlAdvertiserTest` pinning them (don't
+"copy from catplay" again in the future).
 
-**同时移除 `_device-info._tcp` 广播**：Android 的 `NsdServiceInfo` 不接受 port=0，
-真机每次都报 `The port is missing`（日志 4 次）。它是未验证收益的附加广播，
-失败只会制造噪音——移除而不是去修，因为没有任何证据表明这台车需要它。
+**Also removed the `_device-info._tcp` advertisement**: Android's `NsdServiceInfo` doesn't accept port=0,
+and on device it reported `The port is missing` every time (4 times in the log). It was an additional advertisement with unverified benefit,
+and failures only produce noise — removed rather than fixed, because there's no evidence this car needs it.
 
-**另两个顺带修掉的问题**：
+**Other issues fixed along the way**:
 
-1. **0x4300/0x4E0E 用的是占位 MAC**：本次日志全篇
-   `设备状态问候 … mac=02:00:00:00:00:00`。`DeviceIdentity` 对解析失败有 10 秒静默
-   窗口，而 BT 会话常在 Shizuku 刚就绪的同一毫秒构造——首次失败后 10 秒内全返回
-   占位值（0.1.6 的日志里第 2、3 轮就是真实 MAC `5C:40:71:A4:0A:90`）。奥迪会拿
-   0x4300 的传输标识与 RFCOMM 对端核对，占位值导致静默丢弃。
-   → `BtSession` 改为会话启动时 `forceRetry` 解析并打日志。
-2. **ctrl 广播的 TXT 从未进日志**：导致上面这次无法直接归因（只能靠版本对比）。
-   → 每次注册打印 `name= / id= / srcvers=`，占位 MAC 额外标 ⚠。
-3. **兜底期不再公告也不再查 mDNS**：4s 邀请窗口超时后只对着网关空转 54s。
-   → `AirPlayClient` 增加 `retryTick`（每 10 次重试 ≈ 20s）：重新 force_announce
-   ctrl，并把「车机邀请次数 + mDNS 是否发现」写进日志。
+1. **0x4300/0x4E0E were using a placeholder MAC**: throughout this log,
+   `device status greeting … mac=02:00:00:00:00:00`. `DeviceIdentity` has a 10-second quiet
+   window after a resolution failure, and the BT session is often constructed in the same millisecond Shizuku becomes ready — after the first failure it returned the
+   placeholder for the next 10 seconds (in the 0.1.6 log, rounds 2 and 3 had the real MAC `5C:40:71:A4:0A:90`). Audi checks
+   0x4300's transport identifier against the RFCOMM peer, and the placeholder leads to a silent drop.
+   → `BtSession` now resolves with `forceRetry` at session start and logs the result.
+2. **The ctrl advertisement's TXT was never logged**: so this case couldn't be attributed directly (only by comparing versions).
+   → Every registration now prints `name= / id= / srcvers=`, with an extra ⚠ for a placeholder MAC.
+3. **No more announcing or mDNS lookups during the fallback phase**: after the 4s invitation window timed out, it just spun against the gateway for 54s.
+   → `AirPlayClient` adds `retryTick` (every 10 retries ≈ 20s): force_announce ctrl again,
+   and log "head unit invitation count + whether mDNS discovered it".
 
-**方法论教训**：把「参考实现的值」直接搬进线上，代价可能是一整轮真车不可用。
-凡是影响**车机如何识别我们**的字段（TXT、服务名、sourceVersion、deviceID），
-都必须先在真车上 A/B 验证，且改动要能一眼从日志归因。
+**Methodology lesson**: moving "the reference implementation's values" straight into production can cost an entire round of the real car being unusable.
+Any field that affects **how the head unit identifies us** (TXT, service name, sourceVersion, deviceID)
+must first be A/B-tested on a real car, and the change must be attributable at a glance from the logs.
 
-## 9j. BMW iD8.5（MGU-86）拿走 0x5702 后 5.4s 拆链：问候消息发晚了（2026-10-23）
+## 9j. BMW iD8.5 (MGU-86) Tears Down the Link 5.4s After Taking 0x5702: Greeting Messages Sent Too Late (2026-10-23)
 
-日志 `F:\Downloads\CarDeck-log-20261021-202434.txt`（**用户给了两份，SHA-256 完全相同**；
-0.1.12，Xiaomi 2106118C / Android 14）。车机 `BMW 31726` / `MGU-86-BMW`（iDrive 8.5）。
+Log `F:\Downloads\CarDeck-log-20261021-202434.txt` (**the user provided two copies with identical SHA-256**;
+0.1.12, Xiaomi 2106118C / Android 14). Head unit `BMW 31726` / `MGU-86-BMW` (iDrive 8.5).
 
-**表象**：6 轮会话全部失败，两种报错交替出现——
-`SESSION 失败: 未拿到车机热点凭据…` 与 `SESSION 失败: iAP2 链路在发送 0x4e0d 时关闭`。
+**Symptom**: all 6 sessions failed, alternating between two errors —
+`SESSION failed: no head unit hotspot credentials…` and `SESSION failed: iAP2 link closed while sending 0x4e0d`.
 
-**已走通**（每轮都成立）：RFCOMM 由**车机主动连入**（我们出站 `BT-C` 每 3s 失败）→
-链路 SYN/SYN|ACK 协商 → `0x1D01` 身份（BMW Group/CinemoHIDComponent）→ MFi
-（`0xAA01` 611B 证书、`0xAA02` 32B 挑战、`0xAA03` 68B 签名，全部往返成功）。
+**What worked** (true in every round): RFCOMM **connected in by the head unit** (our outbound `BT-C` failed every 3s) →
+link SYN/SYN|ACK negotiation → `0x1D01` identity (BMW Group/CinemoHIDComponent) → MFi
+(`0xAA01` 611B certificate, `0xAA02` 32B challenge, `0xAA03` 68B signature, all round trips successful).
 
-**关键结构：车机在两种能力档案间交替**（几乎每次都换一种）：
+**Key structure: the head unit alternates between two capability profiles** (switching almost every time):
 
-| 档案 | 发送清单 | EA 协议 | 0x5702/0x5703 |
+| Profile | Send list | EA protocol | 0x5702/0x5703 |
 |---|---|---|---|
-| A（14 项） | 无 0x5703 | `de.bmw.a4a.bt` protocol=7 | 收=否 / 发=否 |
-| B（16 项） | 含 0x5703、0xaa06 | `com.bmw.carplay` protocol=8 | **收=是 / 发=是** |
+| A (14 items) | No 0x5703 | `de.bmw.a4a.bt` protocol=7 | receive=no / send=no |
+| B (16 items) | Includes 0x5703, 0xaa06 | `com.bmw.carplay` protocol=8 | **receive=yes / send=yes** |
 
-只有 B 档案带无线 CarPlay 能力（还多出 `BMW 31726 Wifi` 的 identity 记录）。A 档案下
-我们按能力清单跳过旧协议、走 0x4300/0x4301——但该车**不声明也不发 0x4301**，所以
-A 档案注定失败。真正该成的是 B 档案。
+Only profile B has wireless CarPlay capability (it also has an extra identity record `BMW 31726 Wifi`). Under profile A
+we skip the old protocol per the capability list and go 0x4300/0x4301 — but this car **neither declares nor sends 0x4301**, so
+profile A is doomed to fail. The one that should succeed is profile B.
 
-**B 档案的死点（毫秒级时间线，两轮一致）**：
-
-```
-T+0.9s  tx 0xea00 startEASession protocol=8 com.bmw.carplay     ← 车机不回应
-T+2.9s  tx 0x5702（空体）                                        ← 我们请求 WiFi 配置
-T+3.0s  rx 链路 ACK（len=0）                                     ← 之后车机一个字节都不再发
-T+8.3s  LINK closed: bt socket closed, read return: -1           ← 对端拆链
-T+8.3s  发送 0x4e0d 失败 → SESSION 失败
-```
-
-时间差稳定在 **0x5702 之后 5.39~5.45s**，从无 0x5703。
-
-**决定性证据：无线档案下设备状态问候一次都没发出去。** 全日志 `tx=0x4e0*` 只出现在
-A 档案轮次；而真 iPhone 的顺序（§12 第 4 步）是 **0xAA05 之后立刻突发**
-`0x4E0C/0x4E0A/0x4E0B/0x4E09…`，然后才轮到订阅/请求。我们的代码把问候排在
-`0x5703 等待之后`（`Iap2SenderSession` 里 WiFi 交换 → 问候 → 0x4300），
-于是 BMW 在等问候、我们在等 0x5703，5 秒后车机判定 accessory 未就绪 → 拆链。
-
-**第二份日志（用户 2026-10-22 补发，`CarDeck-log-20261022-135133.txt`）证明这是可复现的**：
-`BMW 17713` / `MGU-86`（另一台 iD8.5）、Xiaomi 23127PN0CC / Android 16、应用 **0.1.17-debug**。
-**5 轮会话 → 5 次 tx 0x5702 → 0 次 rx 0x5703 → 5 次 LINK closed**，每轮都是
-`0x5702 → 仅链路 ACK → 5.37s 后车机拆 RFCOMM → 发 0x4e0d 失败`。
-这台车**每轮都是 16 项清单（都声明会发 0x5703）**，没有第一份日志里的 A/B 档案交替——
-说明车机一直在认真尝试无线 CarPlay，纯粹是我们没按它要的次序应答。
-（顺带：0.1.17-debug 比本地 HEAD 的 0.1.13 新，说明构建来自其它分支/上游，但失败签名一致。）
-
-**第三处证据：车机声明会发 `0xEA03`（EA 会话状态），但从头到尾一次没发。**
-`0x1D01` 的发送清单里有 `0xea03`、可收清单里有 `0xea00`，说明它支持 EA 会话；
-而我们发出去的 `0xEA00` body 是：
+**Profile B's dead point (millisecond timeline, consistent across two rounds)**:
 
 ```
-param 0: id=0, u8  = protocolId          ← 正确
-param 1: id=1, u16 = protocolId          ← 错：规范这里要 **EA 协议名字符串**
-             译为 "com.bmw.carplay"
+T+0.9s  tx 0xea00 startEASession protocol=8 com.bmw.carplay     ← head unit doesn't respond
+T+2.9s  tx 0x5702 (empty body)                                   ← we request the Wi-Fi config
+T+3.0s  rx link ACK (len=0)                                      ← after this the head unit sends not one more byte
+T+8.3s  LINK closed: bt socket closed, read return: -1           ← peer tears down the link
+T+8.3s  sending 0x4e0d failed → SESSION failed
 ```
 
-旧代码把 param 1 当成协议号发了个整数（日志里却打印 `name=com.bmw.carplay`，
-看日志完全看不出问题）。车机拿到畸形 EA 请求 → 不回 `0xEA03` → CarPlay 数据通道
-没打开 → 8 秒预算耗尽后拆链。奥迪的 EA 协议同样从未回过 `0xea03`，说明这个错误
-对所有车机都一直存在，只是奥迪不靠它推进。
+The gap is consistently **5.39~5.45s after 0x5702**, and 0x5703 never arrives.
 
-**处置（本轮改动，Audi 不受影响）**：
+**Decisive evidence: under the wireless profile the device status greetings were never sent.** In the entire log, `tx=0x4e0*` only appears in
+profile A rounds; whereas the real iPhone's order (§12 step 4) is **an immediate burst right after 0xAA05** of
+`0x4E0C/0x4E0A/0x4E0B/0x4E09…`, and only then subscriptions/requests. Our code scheduled the greetings
+`after the 0x5703 wait` (in `Iap2SenderSession`: Wi-Fi exchange → greetings → 0x4300),
+so BMW was waiting for greetings while we waited for 0x5703; after 5 seconds the head unit decided the accessory wasn't ready → tore down the link.
 
-1. **`0xEA00` 的 param 1 改发协议名**（`Iap2Csm.string(1, name)`），发完探 800ms 的
-   `0xEA03` 并记日志——回没回一眼可见；
-2. **紧贴 `0xAA05` 立刻**发设备状态问候（真 iPhone 次序；原来排在 0x5703 等待之后）；
-3. `0x5703` 分段等待：1.5s 未到 → **强制重发一次问候**（`force=true`）；
-4. 再 1.3s 未到 → 重发一次 `0x5702`；
-5. 之后按原窗口继续等，超时仍走 0x4300/0x4301。
+**A second log (sent by the user on 2026-10-22, `CarDeck-log-20261022-135133.txt`) proves this is reproducible**:
+`BMW 17713` / `MGU-86` (another iD8.5), Xiaomi 23127PN0CC / Android 16, app **0.1.17-debug**.
+**5 sessions → 5× tx 0x5702 → 0× rx 0x5703 → 5× LINK closed**, each round being
+`0x5702 → link ACK only → head unit tears down RFCOMM 5.37s later → sending 0x4e0d fails`.
+This car **had a 16-item list every round (always declaring it sends 0x5703)**, with none of the A/B profile alternation from the first log —
+showing the head unit was earnestly attempting wireless CarPlay all along; we simply didn't respond in the order it wanted.
+(Incidentally: 0.1.17-debug is newer than the local HEAD's 0.1.13, so the build came from another branch/upstream, but the failure signature is identical.)
 
-问候总量仍是「一轮一次」（`greetingsSent` 幂等，force 才重发）；Audi 毫秒级回
-0x5703，两条救急都走不到，行为不变。
-
-**仍未定**（下次实车若仍失败，按序排查）：
-
-1. `0x5702` 是否必须带参数（我们发的是**空体**，Audi 接受空体，BMW 可能不接受）——
-   需要一次**真 iPhone 同车抓包**才能定死参数编号；
-2. 链路 NORMAL 态**没有周期保活**（`Iap2LinkEngine` 只在协商期发 SYN），等待窗口内
-   RFCOMM 完全静默 5s 是否触发 BMW 的空闲拆链——若①无效，下一轮加 1s 裸 ACK 保活；
-3. 我们出站 `BT-C` 连车机的 iAP2 服务每 3s 失败（全靠车机回连），SDP 通道选择值得复核。
-
-## §9j 0.1.13 奥迪 MMI 3315 连不上：清单当硬门禁 + 每轮自拆链（2026-10-22）
-
-日志：`CarDeck-log-20261022-185112.txt`（0.1.13，Xiaomi 15 / Android 16 / Audi_MMI_3315_5GHz）。
-
-### 现象链（逐毫秒）
+**Third piece of evidence: the head unit declares it sends `0xEA03` (EA session status), but never sent one from start to finish.**
+`0x1D01`'s send list contains `0xea03` and its receive list contains `0xea00`, showing it supports EA sessions;
+yet the `0xEA00` body we sent was:
 
 ```
-18:47:59.934  0x1D01：Audi_MMI_3315 / AUDI 5163 / DELPHI
-              发送清单(2)=0x4301 0xea03   可收清单(5)=0x4e0c 0x4e09 0x4300 0xea00 0xea01
-18:48:00.634  ⚠「车机未声明支持 0x5702/0x5703 —— 跳过旧协议」
-              → 整份日志 [tx=0x5702] 出现 0 次
-18:48:03.72   0x4301 到达一次（含 SSID/PSK/fe80::900c:…/10.174.189.1:7000）
-18:48:05→49:29  specifier 入网 84 秒无回调 → onUnavailable
-18:49:37.885  第二次入网成功（1.9s，bindProcessToNetwork=true）
-18:49:37→51:07  45 次连 7000 全部 ECONNREFUSED；_airplay._tcp 未发现；车机邀请=0 次
-18:49:55 起 5 轮  每轮 0x1D00→0x1D01→MFi→0x4300 → 8s 无 0x4301
-                 →「SESSION 失败: 未拿到车机热点凭据」→ 自拆链
+param 0: id=0, u8  = protocolId          ← correct
+param 1: id=1, u16 = protocolId          ← wrong: the spec wants the **EA protocol name string** here
+             i.e. "com.bmw.carplay"
 ```
 
-### 与旧版本对照（同一台车、同一个热点）
+The old code sent param 1 as an integer protocol number (while the log printed `name=com.bmw.carplay`,
+so the problem was completely invisible from the log). The head unit received a malformed EA request → didn't reply `0xEA03` → the CarPlay data channel
+never opened → the link was torn down after the 8-second budget ran out. Audi's EA protocol likewise never replied `0xea03`, showing this bug
+has always existed for every head unit; Audi just doesn't rely on it to make progress.
 
-| 日志 | 0x5702 | 结果 |
+**Remedy (changes this round; Audi unaffected)**:
+
+1. **`0xEA00` param 1 now sends the protocol name** (`Iap2Csm.string(1, name)`), then probes 800ms for
+   `0xEA03` and logs it — whether it replied is visible at a glance;
+2. Send the device status greetings **immediately after `0xAA05`** (the real iPhone order; previously after the 0x5703 wait);
+3. Wait for `0x5703` in segments: not arrived after 1.5s → **force a resend of the greetings** (`force=true`);
+4. Not arrived after another 1.3s → resend `0x5702` once;
+5. Then keep waiting with the original window; on timeout still go 0x4300/0x4301.
+
+Greetings are still sent "once per round" in total (`greetingsSent` is idempotent; only force resends); Audi returns
+0x5703 within milliseconds, so neither rescue path is reached and behavior is unchanged.
+
+**Still unresolved** (if the next real-car test still fails, investigate in this order):
+
+1. Whether `0x5702` must carry parameters (we send an **empty body**; Audi accepts an empty body, BMW may not) —
+   pinning down the parameter IDs needs a **real iPhone packet capture on the same car**;
+2. The link has **no periodic keep-alive** in NORMAL state (`Iap2LinkEngine` only sends SYN during negotiation); whether 5s of complete
+   RFCOMM silence within the wait window triggers BMW's idle teardown — if ① doesn't help, add a 1s bare-ACK keep-alive next round;
+3. Our outbound `BT-C` connection to the head unit's iAP2 service fails every 3s (we rely entirely on the head unit connecting back); the SDP channel selection is worth re-checking.
+
+## §9j 0.1.13 Audi MMI 3315 Won't Connect: Capability List Used as a Hard Gate + Self-Teardown Every Round (2026-10-22)
+
+Log: `CarDeck-log-20261022-185112.txt` (0.1.13, Xiaomi 15 / Android 16 / Audi_MMI_3315_5GHz).
+
+### Symptom Chain (Millisecond by Millisecond)
+
+```
+18:47:59.934  0x1D01: Audi_MMI_3315 / AUDI 5163 / DELPHI
+              send list(2)=0x4301 0xea03   receive list(5)=0x4e0c 0x4e09 0x4300 0xea00 0xea01
+18:48:00.634  ⚠ "head unit does not declare support for 0x5702/0x5703 — skipping old protocol"
+              → [tx=0x5702] appears 0 times in the entire log
+18:48:03.72   0x4301 arrives once (with SSID/PSK/fe80::900c:…/10.174.189.1:7000)
+18:48:05→49:29  specifier join: no callback for 84 seconds → onUnavailable
+18:49:37.885  second join succeeds (1.9s, bindProcessToNetwork=true)
+18:49:37→51:07  45 connections to 7000 all ECONNREFUSED; _airplay._tcp not discovered; head unit invitations = 0
+from 18:49:55, 5 rounds  each round 0x1D00→0x1D01→MFi→0x4300 → no 0x4301 for 8s
+                 → "SESSION failed: no head unit hotspot credentials" → self-teardown
+```
+
+### Comparison with Older Versions (Same Car, Same Hotspot)
+
+| Log | 0x5702 | Result |
 |---|---|---|
-| `CarDeck-log-20261019-101353-all.txt` | 发（每轮） | 0x5703 应答 122~368ms；入网 30ms 后 `TCP 已连通 10.174.189.1:7000`；SETUP/RECORD 全通 |
-| `CarDeck-log-20261020-103031.txt` | 发（每轮） | 同上，`0x5703` 166ms、入网 1.9s、端口立即可用 |
-| `CarDeck-log-20261022-185112.txt`（0.1.13） | **0 次** | 端口 7000 **全程 RST**，4 轮全灭 |
+| `CarDeck-log-20261019-101353-all.txt` | Sent (every round) | 0x5703 replied in 122~368ms; 30ms after joining, `TCP connected 10.174.189.1:7000`; SETUP/RECORD all working |
+| `CarDeck-log-20261020-103031.txt` | Sent (every round) | Same as above, `0x5703` 166ms, joined in 1.9s, port available immediately |
+| `CarDeck-log-20261022-185112.txt` (0.1.13) | **0 times** | Port 7000 **RST throughout**, all 4 rounds failed |
 
-**关键推断**：这台奥迪要先收到 0x5702 才会把 AirPlay 服务拉起来。缺了它，车机只吐
-一次孤立的 0x4301，之后整轮沉默、端口不监听。
+**Key inference**: this Audi must receive 0x5702 before it brings up the AirPlay service. Without it, the head unit only emits
+a single isolated 0x4301, then goes silent for the whole round with nothing listening on the port.
 
-### 两个根因
+### Two Root Causes
 
-1. **清单当硬门禁**：`legacyWifiExchange = declaresReceiveWifi != false && declaresSendWifi != false`。
-   奥迪给了清单且不含 0x5702 → 跳过。而同一份日志里 `PROFILE` 行算的却是
-   `wifiGen=UNKNOWN`（理由写着「保守按旧协议」）——**两套判定没接线**，日志说一套做一套。
-2. **每轮 8 秒自拆链**：`wifiFromExchange == null && 无 0x4301` 时直接 `throw IOException`。
-   而真 iPhone 实录（§13a）里车机入网后 **21 秒**才发 ctrl 邀请——每轮重启等于
-   把车机的等待计时反复清零，永远等不到。
+1. **Capability list used as a hard gate**: `legacyWifiExchange = declaresReceiveWifi != false && declaresSendWifi != false`.
+   Audi provided a list without 0x5702 → skipped. Yet the `PROFILE` line in the same log computed
+   `wifiGen=UNKNOWN` (with the reason "conservatively use old protocol") — **the two decisions weren't wired together**; the log said one thing and the code did another.
+2. **Self-teardown every 8 seconds**: when `wifiFromExchange == null && no 0x4301`, it directly does `throw IOException`.
+   But in the real iPhone recording (§13a) the head unit sends the ctrl invitation only **21 seconds** after joining — restarting every round
+   repeatedly resets the head unit's wait timer, so the invitation never comes.
 
-### 修复（0.1.14）
+### Fix (0.1.14)
 
-- 分派只认 `ReceiverProfile.wifiGen`：`NEW` 才跳过 0x5702；`LEGACY`/`UNKNOWN` 一律发；
-  等待窗口 1.5s（奥迪实测 4 倍余量）。
-- 无凭据但有已知热点 SSID 时合成 `airPlayPort=0` 端点继续（`credentiallessEndpoint`），
-  晚到的 0x4301 仍走 `onLateEndpoint` 热更新。
-- 0x4301 路径补写 `lastWifiPsk`/`lastCarWifiSsid`（此前只有 0x5703 路径写，手动兜底
-  按钮因此误报「尚未拿到热点密码」）。
-- ctrl 广播端口固定（重注册只换 mDNS 注册、复用 socket；旧实现每次都换端口，
-  实测 43857→33383→33125→38151→40697→38015，中间还有最长 1.2s 空窗）。
-- 长连接加 `TcpLiveness`（控制/事件/视频三处，idle=10s/count=3/userTimeout=20s）。
-- 单测钉死双向：`sparseDeclarationsStillSendWifiRequest`（奥迪 3315 形态必须发）、
-  `fullDeclarationsWithoutOldProtocolSkipWifiRequest`（宝马 iD9 形态不发）、
-  `knownCarSsidAvoidsCredentiallessAbort` / `noCredentialAndNoKnownSsidStillFails`。
+- Dispatch only trusts `ReceiverProfile.wifiGen`: only `NEW` skips 0x5702; `LEGACY`/`UNKNOWN` always send it;
+  wait window 1.5s (4× headroom per Audi measurements).
+- With no credentials but a known hotspot SSID, synthesize an `airPlayPort=0` endpoint and continue (`credentiallessEndpoint`);
+  a late 0x4301 still goes through the `onLateEndpoint` hot update.
+- The 0x4301 path now also writes `lastWifiPsk`/`lastCarWifiSsid` (previously only the 0x5703 path did, so the manual fallback
+  button falsely reported "hotspot password not yet obtained").
+- Fixed ctrl advertisement port (re-registration only swaps the mDNS registration and reuses the socket; the old implementation changed the port every time,
+  measured 43857→33383→33125→38151→40697→38015, with gaps of up to 1.2s in between).
+- Added `TcpLiveness` to long-lived connections (control/event/video, idle=10s/count=3/userTimeout=20s).
+- Unit tests pin both directions: `sparseDeclarationsStillSendWifiRequest` (Audi 3315 style must send),
+  `fullDeclarationsWithoutOldProtocolSkipWifiRequest` (BMW iD9 style does not send),
+  `knownCarSsidAvoidsCredentiallessAbort` / `noCredentialAndNoKnownSsidStillFails`.
 
-### 判读要点（下次同类问题）
+### Reading the Signs (Next Time a Similar Problem Appears)
 
-- 日志出现「跳过 0x5702」+ 之后 **`ECONNREFUSED`（不是超时/路由不可达）** = 车机在网但
-  没有进程监听 7000 —— 优先怀疑车机侧 CarPlay 栈没被拉起，而不是网络/地址问题。
-- `[tx=0x5702]` 计数为 0 是这次的决定性证据；排查任何「无线连不上」先数它。
-- iPhone sysdiagnose 侧的对应节奏：入网 → **21s** 邀请 → 首轮 MFi 403（正常）→
-  **再等 18~20s** 车机自行重邀 → 成功。客户端任何「十几秒没进展就重来」的策略
-  都会与这个节奏冲突。
+- Log shows "skipping 0x5702" followed by **`ECONNREFUSED` (not a timeout / unreachable route)** = the head unit is on the network but
+  nothing is listening on 7000 — first suspect that the head unit's CarPlay stack was never brought up, not a network/address problem.
+- A `[tx=0x5702]` count of 0 was the decisive evidence this time; for any "wireless won't connect" investigation, count it first.
+- The corresponding rhythm on the iPhone sysdiagnose side: join network → **21s** invitation → first-round MFi 403 (normal) →
+  **wait another 18~20s** for the head unit to re-invite on its own → success. Any client strategy of "start over if there's no progress for a dozen seconds"
+  conflicts with this rhythm.
 
-## 10. 参考文件速查
+## 10. Reference File Quick Lookup
 
-> 表中路径均指 `reference/` 下**代码精读来源**（xcertplay 与 DiPlay 同源，
-> 接收端逻辑一致，读哪份都行）；**实际测试台运行的是 DiPlay**（`reference/DiPlay/`）。
+> All paths in the table refer to **close-reading sources** under `reference/` (xcertplay and DiPlay share a common origin
+> with identical receiver logic, so either works); **the actual test bench runs DiPlay** (`reference/DiPlay/`).
 
-| 内容 | 位置 |
+| Topic | Location |
 |---|---|
-| 链路层字节格式/校验和 | `reference/carplay-wifi-extractor/example/iap2/link_layer.py` |
-| RFCOMM 传输/UUID | 同上 `transport/bluetooth.py`；xcertplay/DiPlay `CarPlayController.kt` |
-| CSM 分帧/TLV | `reference/xcertplay/.../iap2/wire/Iap2CsmFramer.kt`、`Iap2WireCodec.kt` |
-| 无线控制时序 | `reference/xcertplay/.../transport/Iap2WirelessControlClient.kt` |
-| 0x1D01 身份字段 | `reference/xcertplay/.../transport/Iap2IdentificationClient.kt` |
-| 消息端点目录 | `reference/xcertplay/.../iap2/catalog/Iap2Endpoint.kt`（931行,全部参数布局） |
-| Bonjour 细节 | `reference/xcertplay/.../network/CarPlayBonjour.kt` |
-| 接收端 AirPlay 会话 | `reference/xcertplay/.../airplay/AirPlaySession.kt` + `PairVerify.kt` |
-| 测试台（实际运行版） | `reference/DiPlay/`（含真车诊断/音频等增强；与 xcertplay 同源） |
-| 发送端全套参考 | `reference/catplay/carplay/catplay_carplay/src/carplay_tx/` 等 |
-| Windows 接收端（WinPlay） | `reference/WinPlay/`（TS 接收端；设备过滤见 §9d） |
-| MFi 认证（接收端向） | `reference/xcertplay/.../mfi/`；Oligo 博客（单向性证据） |
-| 解密固件(仅查阅) | ludwig-v/wireless-carplay-dongle-reverse-engineering（未克隆） |
+| Link-layer byte format / checksum | `reference/carplay-wifi-extractor/example/iap2/link_layer.py` |
+| RFCOMM transport / UUID | Same repo, `transport/bluetooth.py`; xcertplay/DiPlay `CarPlayController.kt` |
+| CSM framing / TLV | `reference/xcertplay/.../iap2/wire/Iap2CsmFramer.kt`, `Iap2WireCodec.kt` |
+| Wireless control sequence | `reference/xcertplay/.../transport/Iap2WirelessControlClient.kt` |
+| 0x1D01 identity fields | `reference/xcertplay/.../transport/Iap2IdentificationClient.kt` |
+| Message endpoint catalog | `reference/xcertplay/.../iap2/catalog/Iap2Endpoint.kt` (931 lines, all parameter layouts) |
+| Bonjour details | `reference/xcertplay/.../network/CarPlayBonjour.kt` |
+| Receiver AirPlay session | `reference/xcertplay/.../airplay/AirPlaySession.kt` + `PairVerify.kt` |
+| Test bench (version actually run) | `reference/DiPlay/` (with real-car diagnostics/audio enhancements; same origin as xcertplay) |
+| Full sender reference | `reference/catplay/carplay/catplay_carplay/src/carplay_tx/` etc. |
+| Windows receiver (WinPlay) | `reference/WinPlay/` (TS receiver; device filtering see §9d) |
+| MFi authentication (receiver-side) | `reference/xcertplay/.../mfi/`; Oligo blog (evidence of one-way auth) |
+| Decrypted firmware (lookup only) | ludwig-v/wireless-carplay-dongle-reverse-engineering (not cloned) |
 
-## 12. MIB3 WiFi 隧道（AirPlay 会话之上的第二条 iAP2 链路，2026-10-19）
+## 12. MIB3 Wi-Fi Tunnel (a Second iAP2 Link on Top of the AirPlay Session, 2026-10-19)
 
-> **⚠ 2026-10-23 二次修正（以本块为准）**：本节「MIB3 必须建隧道否则 10~12s 拆链」
-> 的结论**成立**；当天早些时候「CLASSIC_MIB3 忽略 marker 永不协商」的修正**被证伪**。
-> 统一模型（证据链齐全）：
-> ① **链路必须协商到 NORMAL**——车机的 marker 是它在等我们的会话表，1Hz **无限重发**
->   （0.1.17 车主日志实测远超「2~5 个」旧说）；不回应则 RECORD 后 ~10s 车机拆整条
->   无线栈（0.1.9 实测 10.17s、0.1.17 实测 10.18s，与心跳全健康无关）。
->   「0.1.9 忽略 marker 时奥迪照常进入 CarPlay」系误传——0.1.9 自己的日志就是 10.17s
->   拆链。真 iPhone `iAPChannel FeatureKey=0` 的含义是链路协商**完成**后结果为零隧道，
->   不是「不参与协商」。
-> ② **切屏靠协商完成后的 modesChanged 资源重申**——082446（0.1.14）协商/MFi/订阅
->   全部成功、会话健康 35s+，车机却不切画面：第二控制会话把车机资源仲裁重置了一遍，
->   会话早期那份 modesChanged 已失效。AADisplay r17 长播验证的时序：auth+burst 后
->   **+1.5s 首发、+4/+12/+30s 重申**（不得在 0xAA00/0xAA05 进行中声明——与 iAP POST
->   抢控制通道会把奥迪搞死 ~12s）。0.1.12「出画面 3 秒断」= 协商砸进刚起步的 HMI，
->   时序错位同源。
-> 现行实现：marker 升级协商全代际统一；`VirtualIap2Link.onControlSessionComplete`
-> → `SessionController.scheduleModesReclaim`。曾据此写的「忽略 marker」分派已删。
+> **⚠ Second correction on 2026-10-23 (this block is authoritative)**: this section's conclusion "MIB3 requires the tunnel, otherwise the link is torn down after 10~12s"
+> **holds**; the correction from earlier that day, "CLASSIC_MIB3 ignores the marker and never negotiates", **has been disproven**.
+> Unified model (complete chain of evidence):
+> ① **The link must be negotiated to NORMAL** — the head unit's marker means it is waiting for our session table, resent at 1Hz **indefinitely**
+>   (the 0.1.17 owner log shows far more than the old "2~5"); with no response, the head unit tears down the entire
+>   wireless stack ~10s after RECORD (measured 10.17s on 0.1.9, 10.18s on 0.1.17, regardless of all heartbeats being healthy).
+>   "Audi entered CarPlay as normal when 0.1.9 ignored the marker" was a misreport — 0.1.9's own log shows the 10.17s
+>   teardown. The real iPhone's `iAPChannel FeatureKey=0` means the result after link negotiation **completes** is zero tunnels,
+>   not "doesn't take part in negotiation".
+> ② **Switching the screen relies on re-asserting modesChanged resources after negotiation completes** — 082446 (0.1.14) had negotiation/MFi/subscriptions
+>   all succeed and a healthy session for 35s+, yet the head unit didn't switch the picture: the second control session reset the head unit's resource arbitration,
+>   invalidating the modesChanged sent early in the session. The timing validated by AADisplay r17 long-play testing: after auth+burst,
+>   **first send at +1.5s, re-assert at +4/+12/+30s** (must not be declared while 0xAA00/0xAA05 is in progress — contending with iAP POSTs
+>   for the control channel kills the Audi for ~12s). 0.1.12's "picture appears, drops after 3 seconds" = negotiation slamming into a freshly started HMI,
+>   the same timing-misalignment root cause.
+> Current implementation: marker-triggered upgrade negotiation unified across all generations; `VirtualIap2Link.onControlSessionComplete`
+> → `SessionController.scheduleModesReclaim`. The "ignore marker" dispatch once written based on the disproven correction has been deleted.
 
-> 事实源：`reference/AADisplay`（分支 AADisplay-Split-Lite-Carplay，**GPL-3.0 只读参考**）。
-> 他们用 Frida 挂越狱 iPhone 的 mediaserverd 抓的真机握手；本仓库据此实现
-> `airplay/VirtualIap2Link.kt`（协议事实照抄，代码独立编写）。
+> Source of facts: `reference/AADisplay` (branch AADisplay-Split-Lite-Carplay, **GPL-3.0, read-only reference**).
+> They captured the real-device handshake by hooking mediaserverd on a jailbroken iPhone with Frida; this repo implements
+> `airplay/VirtualIap2Link.kt` based on that (protocol facts copied verbatim, code written independently).
 
-**「为什么需要」（原始结论，仅 EVENT_LINK 形态适用）**：MIB3 在 AirPlay 会话建立后还要求手机在**事件通道**上开第二条 iAP2
-链路并重跑控制会话——只回链路 ACK（空回显）时 MIB3 约 10~12 秒整链拆除（本仓库
-2026-10-19 两轮实车日志 10.2s 复现；此前误判为心跳缺失，§9e 的三条心跳修复并不能
-救这台车）。AADisplay 源码注释原文："Empty ACK alone makes MIB3 tear AirPlay control
+**"Why it's needed" (original conclusion, applies only to the EVENT_LINK form)**: after the AirPlay session is established, MIB3 also requires the phone to open a second iAP2
+link on the **event channel** and rerun the control session — when only link ACKs (empty echoes) are returned, MIB3 tears down the whole link after about 10~12 seconds (reproduced at 10.2s in two rounds of
+this repo's real-car logs on 2026-10-19; previously misdiagnosed as missing heartbeats — the three-heartbeat fix in §9e cannot
+save this car). The original comment in AADisplay's source: "Empty ACK alone makes MIB3 tear AirPlay control
 down in ~12s with no picture."
 
-**传输不对称**（关键）：
-- 车机→手机：链路字节走**事件通道**（TCP 5001）上的 `POST /command`，bplist
-  `{"type":"iAPSendMessage","params":{"data":<链路帧>}}`；
-- 手机→车机：走**RTSP 控制通道**（7000）上的 `POST /command`（同样的 iAPSendMessage
-  信封，ChaCha 封帧）——写在事件通道上 MIB3 **不读**（DiPlay 宽容，奥迪不宽容）。
+**Transport asymmetry** (key):
+- Head unit → phone: link bytes travel via `POST /command` on the **event channel** (TCP 5001), bplist
+  `{"type":"iAPSendMessage","params":{"data":<link frame>}}`;
+- Phone → head unit: via `POST /command` on the **RTSP control channel** (7000) (the same iAPSendMessage
+  envelope, ChaCha-framed) — MIB3 **doesn't read** what's written on the event channel (DiPlay is lenient, Audi is not).
 
-**时序**（Frida 真机）：
-1. 屏幕流 SETUP 200（拿到 dataPort）后，手机主动发**一次** DETECT marker（经控制
-   通道）——早发会在 SETUP 交换期间被冲掉；此后车机的 marker 都是探测重发，忽略；
-2. 车机回 SYN（事件通道，纯 SYN 带 LSP）→ 手机回 SYN|ACK（控制通道）。LSP 要声明
-   **自己的**参数：maxOutgoing=0x7F（原样回显对端表=把自己限死在对端小窗口里，
-   突发消息会积压）、maxLength 保持对端值；会话表沿用对端（后续版本可注入
-   file-transfer 0x0C，仪表盘封面要用）；
-3. 链路 NORMAL 后手机发 0x1D00 → 车机 0x1D01 → 手机 0x1D02 + 0xAA00 →
-   （车机 0xAA06 auth serial → 手机再发 0xAA00）→ 车机 0xAA01 证书 → 手机 0xAA02
-   挑战 → 车机 0xAA03 → 手机 0xAA05（不验签直接接受）。**挑战长度无版本号可查**
-   （由车机 MFi 认证芯片代次决定，不在任何身份/版本字段里）：Frida 抓到的隧道
-   真机是 20B，DiPlay CARLINKIT 只认 32B，同一台 MMI 3315 蓝牙认 32B——所以隧道
-   路径接 `MfiLengthMemory`（记忆键=身份串+" tunnel"，与蓝牙链路独立），冷启动
-   基线 20B 优先，静默 6s/3s 换档重试、被拒（0xAA04）即换、全静默照发 0xAA05；
-4. 0xAA05 后手机**突发**（先于车机任何订阅）：0x4E0C 无线会话标识(随机大写 UUID)、
-   0xA100(param 6 空)、0x4E0A 语言 "zh"、0x4E0B 设备时间(u64 秒+s16 时区分+u8 夏令时)、
-   0x4E09 设备名 "iPhone"、0xFFFA StartLocationInformation、0xFFF0 GPRMC 状态——
-   后两条为逐字节 Frida 常量（`VirtualIap2Link` companion）；
-5. 车机订阅应答：0x5000→0x5001 NowPlaying 空态（**仪表盘歌词的数据通路**，后续接
-   MediaSessionsState）、0x4157→0x4158 通讯空态、0x4154→0x4155 无通话、
-   0x4170→0x4171 空列表；0xEA02(requestAppLaunch)/0xA101(VehicleStatus)/
-   **0xFFFB(PASCD 定位样本 ~1Hz) 只链路 ACK——漏 ACK 车机同样 ~10s 后关控制通道**。
+**Sequence** (Frida, real device):
+1. After the screen stream SETUP returns 200 (dataPort obtained), the phone sends a DETECT marker **once** on its own (via the control
+   channel) — sent too early, it is flushed during the SETUP exchange; afterwards the head unit's markers are all probe resends and are ignored;
+2. The head unit replies with SYN (event channel, pure SYN with LSP) → the phone replies SYN|ACK (control channel). The LSP must declare
+   **its own** parameters: maxOutgoing=0x7F (echoing the peer's table verbatim = locking yourself into the peer's small window,
+   burst messages back up), keep maxLength at the peer's value; the session table follows the peer's (later versions may inject
+   file-transfer 0x0C, needed for dashboard cover art);
+3. Once the link is NORMAL the phone sends 0x1D00 → head unit 0x1D01 → phone 0x1D02 + 0xAA00 →
+   (head unit 0xAA06 auth serial → phone sends 0xAA00 again) → head unit 0xAA01 certificate → phone 0xAA02
+   challenge → head unit 0xAA03 → phone 0xAA05 (accepted directly without verifying the signature). **There is no version number to look up the challenge length**
+   (it's determined by the generation of the head unit's MFi authentication chip and isn't in any identity/version field): the tunneled
+   real device captured by Frida used 20B, DiPlay CARLINKIT only accepts 32B, and the same MMI 3315 accepts 32B over Bluetooth — so the tunnel
+   path uses `MfiLengthMemory` (memory key = identity string + " tunnel", independent of the Bluetooth link), with a cold-start
+   baseline of 20B first, switching length and retrying after 6s/3s of silence, switching immediately on rejection (0xAA04), and still sending 0xAA05 if all are silent;
+4. After 0xAA05 the phone sends a **burst** (before any head unit subscription): 0x4E0C wireless session identifier (random uppercase UUID),
+   0xA100 (param 6 empty), 0x4E0A language "zh", 0x4E0B device time (u64 seconds + s16 timezone minutes + u8 DST),
+   0x4E09 device name "iPhone", 0xFFFA StartLocationInformation, 0xFFF0 GPRMC status —
+   the last two are byte-for-byte Frida constants (`VirtualIap2Link` companion);
+5. Replies to head unit subscriptions: 0x5000→0x5001 NowPlaying empty state (**the data path for dashboard lyrics**, later to be wired to
+   MediaSessionsState), 0x4157→0x4158 communications empty state, 0x4154→0x4155 no calls,
+   0x4170→0x4171 empty list; 0xEA02 (requestAppLaunch) / 0xA101 (VehicleStatus) /
+   **0xFFFB (PASCD location samples ~1Hz) get link ACK only — missing ACKs also make the head unit close the control channel after ~10s**.
 
-**引擎配套改动**（`iap2/Iap2LinkEngine.kt`，均有单测）：
-- 发起方收到 SYN|ACK（非纯 SYN）也采纳会话表并推进有序水位（只采纳不回显）；
-- 响应方回显 SYN|ACK 即视为协商完成（真机不等 ACK 就发 0x1D00）；
-- 回显用 ownSyncOf（maxOutgoing=0x7F），发送窗口按**本方声明值**计。
+**Accompanying engine changes** (`iap2/Iap2LinkEngine.kt`, all unit-tested):
+- When the initiator receives SYN|ACK (not a pure SYN) it also adopts the session table and advances the in-order watermark (adopt only, no echo);
+- The responder treats echoing SYN|ACK as negotiation complete (the real device sends 0x1D00 without waiting for the ACK);
+- The echo uses ownSyncOf (maxOutgoing=0x7F), and the send window is computed from **our own declared value**.
 
-**AADisplay 参考索引**：`carplay/protocol/WifiIap2Link.kt`（时序+常量）、
-`CarPlayRtspSession.kt:642`（控制通道 POST /command 写法）、`docs/AUDI_CARPLAY_CONNECT_ANALYSIS.md`。
+**AADisplay reference index**: `carplay/protocol/WifiIap2Link.kt` (sequence + constants),
+`CarPlayRtspSession.kt:642` (how POST /command is written on the control channel), `docs/AUDI_CARPLAY_CONNECT_ANALYSIS.md`.
 
-## §13 真机 iPhone sysdiagnose 对照（2026-10-21/17，两车三份抓包）
+## §13 Real iPhone sysdiagnose Comparison (2026-10-21/17, Two Cars, Three Captures)
 
-来源：iOS 24A446（18.x）sysdiagnose 的 unified log（airplayd/mDNSResponder），验证手段
-`/usr/bin/log show --archive system_logs.logarchive --predicate ...`（zsh 内建 `log` 会顶掉，必须全路径）。
+Source: unified log (airplayd/mDNSResponder) from iOS 24A446 (18.x) sysdiagnose, verified with
+`/usr/bin/log show --archive system_logs.logarchive --predicate ...` (the zsh builtin `log` shadows it, so the full path is required).
 
-### 13a. 奥迪 MMI 3315_5GHz ——「首连必拒、重邀即成」
+### 13a. Audi MMI 3315_5GHz — "First Connection Always Rejected, Re-Invitation Succeeds"
 
-两份抓包（同车，14:24/14:32）一致的时间线：
+Timeline consistent across both captures (same car, 14:24/14:32):
 
-1. BT 供应链自动入网（airplayd 记 `CarPlay UUID` 有值）→ 约 **21s 后**车机首次 ctrl 邀请
-   （`HandleControlServerEvent command 'connect'`）；
-2. 连 `[fe80::…%en0]:7000`（**IPv6 link-local**，1022ms）→ pair-verify M1-M4 **32ms 成功**；
-3. **MFi 认证段被 403 拒**（`MFi failed: 200403 Forbidden → Stage 1 failed → StartupFailed`）
-   ——**真 iPhone 首次连接同样被拒**，属车机固有状态而非客户端问题；
-4. **车机 18~20s 后自行重发邀请**，第二次 verify 16ms、MFi（challenge 64B / 证书 607B）
-   通过，Stage 1/2 → 授权 → 开流。全程**不断蓝牙、不换网络**；
-5. 成功会话里 **`iAPChannel` FeatureKey 协商结果 = 0**（WiFi iAP2 隧道未启用）——
-   与我们「MIB3 必须建隧道」的结论相悖，改隧道策略前必须真车 A/B；
-6. 杂项：SETUP 应答可不带 streamID（iPhone 自动补 0）；RECORD 往返 17ms；流级心跳
-   Standard 2017ms；会话级 keepAlive 10s（LowPower）。
+1. BT provisioning joins the network automatically (airplayd logs a value for `CarPlay UUID`) → about **21s later** the head unit sends its first ctrl invitation
+   (`HandleControlServerEvent command 'connect'`);
+2. Connects to `[fe80::…%en0]:7000` (**IPv6 link-local**, 1022ms) → pair-verify M1-M4 **succeeds in 32ms**;
+3. **The MFi authentication stage is rejected with 403** (`MFi failed: 200403 Forbidden → Stage 1 failed → StartupFailed`)
+   — **a real iPhone is rejected on first connection too**; it's an inherent head unit state, not a client problem;
+4. **The head unit resends the invitation on its own 18~20s later**; the second verify takes 16ms, MFi (challenge 64B / certificate 607B)
+   passes, Stage 1/2 → authorized → streams open. Throughout, **Bluetooth is never dropped and the network never changes**;
+5. In the successful session the **`iAPChannel` FeatureKey negotiation result = 0** (Wi-Fi iAP2 tunnel not enabled) —
+   contradicting our conclusion that "MIB3 requires the tunnel"; do a real-car A/B before changing the tunnel strategy;
+6. Misc: the SETUP reply may omit streamID (the iPhone fills in 0 automatically); RECORD round trip 17ms; stream-level heartbeat
+   Standard 2017ms; session-level keepAlive 10s (LowPower).
 
-落地（2026-10-22）：`AirPlayClient.pairingForbidden`（任意段 403 标记）→ 主控不再走
-「断 BT 第二阶段」、不再降级 et=NONE；配对循环 403 后退避 5s（车机就绪窗 ~20s，
-高频重试可能一直重置其状态机）。
+Implemented (2026-10-22): `AirPlayClient.pairingForbidden` (flagged on a 403 at any stage) → the main controller no longer takes
+the "drop BT, second phase" path and no longer downgrades to et=NONE; the pairing loop backs off 5s after a 403 (the head unit's readiness window is ~20s,
+and high-frequency retries may keep resetting its state machine).
 
-### 13b. 一汽大众探歌 23 款（VW WLAN）——「手动入网永远无效」
+### 13b. FAW-Volkswagen T-Roc 2023 (VW WLAN) — "Manually Joining the Network Never Works"
 
-- 2.4G `VW WLAN` 手动加入 ×5 轮：`CarPlay UUID: N/A`、**`_airplay._tcp` 全程零 mDNS
-  应答**、无邀请，iPhone 等 67s 退网，循环；
-- BT 供应链就绪后自动加入 `VW WLAN_5GHz`（带 UUID）→ **77ms 后**车机邀请 →
-  `fe80::…:7000`（1831ms）→ verify 21ms → MFi 成功 → 正常推流 3 分钟（无 403）；
-- 车机 SETUP 应答带 viewAreas/initialViewArea 结构但未声明 feature（iPhone 仅告警容忍）。
+- Manually joined 2.4G `VW WLAN` ×5 rounds: `CarPlay UUID: N/A`, **zero mDNS responses for `_airplay._tcp`
+  throughout**, no invitation; the iPhone waits 67s, leaves the network, and loops;
+- Once BT provisioning is ready it automatically joins `VW WLAN_5GHz` (with UUID) → **77ms later** the head unit invites →
+  `fe80::…:7000` (1831ms) → verify 21ms → MFi succeeds → streams normally for 3 minutes (no 403);
+- The head unit's SETUP reply includes the viewAreas/initialViewArea structure without declaring the feature (the iPhone only warns and tolerates it).
 
-结论：该车型只对「iAP2 配供应链带出的那次入网」激活 CarPlay 栈——系统里保存过/手动
-连过车机热点都会堵死连接（我们的「同 SSID 已保存弹窗清理」对此车是关键步骤），
-且必须严格用 0x5703 下发的 SSID（双频 SSID，成功路径是 `_5GHz`）。
+Conclusion: this model only activates the CarPlay stack for "the network join brought about by iAP2 provisioning" — having the head unit hotspot saved in the system
+or having joined it manually blocks the connection (our "clean up saved network with the same SSID" dialog is a key step for this car),
+and the SSID delivered by 0x5703 must be used strictly (dual-band SSIDs; the successful path is `_5GHz`).

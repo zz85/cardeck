@@ -58,10 +58,10 @@ class CarPlayServiceBrowser(
 
     fun start(serviceType: String = AIRPLAY_TYPE) {
         if (discovering) {
-            log("$TAG: 已在扫描中")
+            log("$TAG: already scanning")
             return
         }
-        log("$TAG: 开始发现 $serviceType")
+        log("$TAG: starting discovery $serviceType")
         nsdManager.discoverServices(serviceType, NsdManager.PROTOCOL_DNS_SD, discoveryListener)
         discovering = true
     }
@@ -70,7 +70,7 @@ class CarPlayServiceBrowser(
         if (!discovering) return
         runCatching { nsdManager.stopServiceDiscovery(discoveryListener) }
         discovering = false
-        log("$TAG: 停止发现")
+        log("$TAG: stopping discovery")
     }
 
     private val discoveryListener =
@@ -80,14 +80,14 @@ class CarPlayServiceBrowser(
                 errorCode: Int,
             ) {
                 discovering = false
-                log("$TAG: 发现启动失败 code=$errorCode")
+                log("$TAG: discovery start failed code=$errorCode")
             }
 
             override fun onStopDiscoveryFailed(
                 serviceType: String,
                 errorCode: Int,
             ) {
-                log("$TAG: 停止失败 code=$errorCode")
+                log("$TAG: stop failed code=$errorCode")
             }
 
             override fun onDiscoveryStarted(serviceType: String) = Unit
@@ -95,12 +95,12 @@ class CarPlayServiceBrowser(
             override fun onDiscoveryStopped(serviceType: String) = Unit
 
             override fun onServiceFound(serviceInfo: NsdServiceInfo) {
-                log("$TAG: 发现服务 ${serviceInfo.serviceName} (${serviceInfo.serviceType})，解析中…")
+                log("$TAG: found service ${serviceInfo.serviceName} (${serviceInfo.serviceType}), resolving...")
                 resolveWithRetry(serviceInfo, attempts = 3)
             }
 
             override fun onServiceLost(serviceInfo: NsdServiceInfo) {
-                log("$TAG: 服务消失 ${serviceInfo.serviceName}")
+                log("$TAG: service lost ${serviceInfo.serviceName}")
             }
         }
 
@@ -120,7 +120,7 @@ class CarPlayServiceBrowser(
                             resolveWithRetry(info, attempts - 1)
                         }.start()
                     } else {
-                        log("$TAG: 解析失败 ${info.serviceName} code=$errorCode")
+                        log("$TAG: resolve failed ${info.serviceName} code=$errorCode")
                     }
                 }
 
@@ -137,7 +137,7 @@ class CarPlayServiceBrowser(
                         }
                     // 验收放在缓存之前：非车机端点（如同一 WiFi 上的 Mac）不得污染 awaitEndpoint
                     val accepted = accept(info)
-                    log("$TAG: OK ${info.serviceName} -> $host:${info.port}${if (accepted) "" else "（非车机，忽略）"}")
+                    log("$TAG: OK ${info.serviceName} -> $host:${info.port}${if (accepted) "" else " (not a head unit, ignored)"}")
                     if (txt.isNotEmpty()) log("$TAG: TXT $txt")
                     if (accepted) resolved = info
                     onEndpoint(info)

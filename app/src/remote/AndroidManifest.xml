@@ -20,7 +20,7 @@
         <activity
             android:name=".bridge.BridgeSetupActivity"
             android:exported="true"
-            android:label="CarDeck 远程调试"
+            android:label="CarDeck Remote Debug"
             android:launchMode="singleTop"
             android:theme="@style/Theme.CarPlaySender">
             <intent-filter>

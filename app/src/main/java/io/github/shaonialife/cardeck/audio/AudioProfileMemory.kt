@@ -135,13 +135,13 @@ object AudioProfileMemory {
     /** 打印用：压成一行日志。 */
     fun describe(entry: Entry): String =
         when {
-            entry.disabled -> "本车机音频已判定不兼容（只推视频）"
-            entry.isEmpty -> "无"
+            entry.disabled -> "audio deemed incompatible for this head unit (video only)"
+            entry.isEmpty -> "none"
             else ->
                 buildList {
-                    entry.working?.let { add("可用=$it") }
-                    if (entry.rejected.isNotEmpty()) add("拆链=${entry.rejected.sorted().joinToString("/")}")
-                }.joinToString("，")
+                    entry.working?.let { add("works=$it") }
+                    if (entry.rejected.isNotEmpty()) add("dropped=${entry.rejected.sorted().joinToString("/")}")
+                }.joinToString(", ")
         }
 
     /**

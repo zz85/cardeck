@@ -68,7 +68,7 @@ class Iap2BluetoothServer(
     fun start(): Boolean {
         if (running) return true
         if (!hasPermission()) {
-            log("BT: 缺少 BLUETOOTH_CONNECT 权限")
+            log("BT: missing BLUETOOTH_CONNECT permission")
             return false
         }
         val adapter =
@@ -78,7 +78,7 @@ class Iap2BluetoothServer(
                 null
             }
         if (adapter == null || !adapter.isEnabled) {
-            log("BT: 蓝牙不可用或未开启")
+            log("BT: Bluetooth unavailable or off")
             return false
         }
         return try {
@@ -86,14 +86,14 @@ class Iap2BluetoothServer(
                 adapter.listenUsingRfcommWithServiceRecord(SDP_NAME, IPHONE_IAP2_UUID),
             )
             running = true
-            log("BT: 监听 $SDP_NAME，等待接收端回连…")
+            log("BT: listening on $SDP_NAME, waiting for receiver to connect back...")
             Thread(::acceptLoop, "iap2-bt-accept").apply {
                 isDaemon = true
                 start()
             }
             true
         } catch (error: IOException) {
-            log("BT: 监听失败 - ${error.message}")
+            log("BT: listen failed - ${error.message}")
             false
         }
     }
@@ -105,7 +105,7 @@ class Iap2BluetoothServer(
                 try {
                     serverSocket.get()?.accept() ?: break
                 } catch (error: IOException) {
-                    if (running) log("BT: accept 失败 - ${error.message}")
+                    if (running) log("BT: accept failed - ${error.message}")
                     break
                 }
             val peerName =
@@ -125,13 +125,13 @@ class Iap2BluetoothServer(
                 }
             if (target != null && !TargetDevicePrefs.matches(target, peerAddress)) {
                 log(
-                    "BT: 忽略非目标设备连入 name=$peerName addr=${peerAddress ?: "?"}" +
-                        "（当前目标：「${target.name}」）",
+                    "BT: ignoring incoming non-target device name=$peerName addr=${peerAddress ?: "?"}" +
+                        " (current target: \"${target.name}\")",
                 )
                 runCatching { socket.close() }
                 continue
             }
-            log("BT: 接收端已连入 name=$peerName，开始 iAP2 发送端会话")
+            log("BT: receiver connected name=$peerName, starting iAP2 sender session")
             Thread({ runSession(socket) }, "iap2-bt-session").apply {
                 isDaemon = true
                 start()
@@ -160,12 +160,12 @@ class Iap2BluetoothServer(
                 onGeneration,
             )
         } catch (error: IOException) {
-            log("SESSION 失败: ${error.message}")
+            log("SESSION failed: ${error.message}")
         } finally {
             activeChannel = null
             BtSessionGate.inboundActive = false
             channel.close()
-            log("SESSION 结束，等待接收端重连（BT 监听仍在运行）")
+            log("SESSION ended, waiting for receiver to reconnect (BT listener still running)")
         }
     }
 
@@ -174,13 +174,13 @@ class Iap2BluetoothServer(
         activeChannel?.let { channel ->
             activeChannel = null
             channel.close()
-            log("BT: 已主动断开当前控制会话（模拟 tunnel handoff 后的退役）")
+            log("BT: closed current control session (simulated retirement after tunnel handoff)")
         }
     }
 
     fun stop() {
         running = false
         serverSocket.getAndSet(null)?.let { runCatching { it.close() } }
-        log("BT: 监听已停止")
+        log("BT: listener stopped")
     }
 }

@@ -199,12 +199,12 @@ class AacLcEncoder(
             presentationUs = 0L
             started = true
             log(
-                "AUDIO: AAC-LC 编码器就绪（${sampleRate}Hz ${channels}ch " +
-                    "${bitRate / 1000}kbps，帧=${FRAME_SAMPLES}采样/${inputFrameBytes}B）",
+                "AUDIO: AAC-LC encoder ready (${sampleRate}Hz ${channels}ch " +
+                    "${bitRate / 1000}kbps, frame=${FRAME_SAMPLES} samples/${inputFrameBytes}B)",
             )
             true
         } catch (error: Exception) {
-            log("AUDIO: AAC-LC 编码器启动失败 - ${error.message}（本档位放弃）")
+            log("AUDIO: AAC-LC encoder start failed - ${error.message} (giving up this tier)")
             started = false
             false
         }
@@ -237,7 +237,7 @@ class AacLcEncoder(
             }
             drain(encoder, output)
         } catch (error: Exception) {
-            log("AUDIO: AAC 编码异常 - ${error.message}")
+            log("AUDIO: AAC encode error - ${error.message}")
         }
         return output
     }
@@ -285,7 +285,7 @@ class AacLcEncoder(
         if (frame.size <= headerSize) return frame
         if (!adtsStripped) {
             adtsStripped = true
-            log("AUDIO: 编码器输出带 ADTS 头（${headerSize}B）——已剥离，改发裸 AAC 帧")
+            log("AUDIO: encoder output has ADTS header (${headerSize}B) - stripped, sending raw AAC frames")
         }
         return frame.copyOfRange(headerSize, frame.size)
     }
@@ -299,7 +299,7 @@ class AacLcEncoder(
         val raw = stripAdts(frame)
         if (!adtsWrapped && wrapAdts) {
             adtsWrapped = true
-            log("AUDIO: 已改为 ADTS 封装（每帧补 7 字节头，方案2）")
+            log("AUDIO: switched to ADTS framing (7-byte header added per frame, option 2)")
         }
         val out = if (wrapAdts) buildAdts(raw) else raw
         // 首帧留档：出问题时能直接从日志里核对负载是不是合法 AAC（而不是等用户导文件）
@@ -307,8 +307,8 @@ class AacLcEncoder(
             firstFrameLogged = true
             val head = out.take(16).joinToString(" ") { "%02X".format(it) }
             log(
-                "AUDIO: 首帧 ${out.size}B（裸帧 ${raw.size}B）head=$head" +
-                    (if (wrapAdts) "（ADTS，sync=FFF）" else ""),
+                "AUDIO: first frame ${out.size}B (raw frame ${raw.size}B) head=$head" +
+                    (if (wrapAdts) " (ADTS, sync=FFF)" else ""),
             )
         }
         return out

@@ -21,12 +21,12 @@ object SettingsMenus {
 
     val ALL =
         listOf(
-            Item(DESKTOP, "管理桌面应用", "勾选的应用显示在车机桌面", R.drawable.ic_menu_grid),
-            Item(SUPERSAMPLE, "应用超采样", "竖屏应用渲染更精细，可三态调节", R.drawable.ic_menu_zoom),
-            Item(ORIENTATION, "应用横屏", "竖屏应用在车机横屏全屏显示", R.drawable.ic_screen_rotation),
-            Item(DOCK, "dock 栏设置", "壁纸暗幕透明度与模糊程度", R.drawable.ic_menu_dock),
-            Item(DEFAULT_MAP, "默认地图", "仪表盘地图屏使用的地图应用", R.drawable.ic_menu_map),
-            Item(DISPLAY, "显示", "流分辨率缩放与目标帧率", R.drawable.ic_menu_display),
+            Item(DESKTOP, "Home apps", "Checked apps appear on the car home screen", R.drawable.ic_menu_grid),
+            Item(SUPERSAMPLE, "Supersampling", "Sharper rendering for portrait apps; 3 modes", R.drawable.ic_menu_zoom),
+            Item(ORIENTATION, "Force landscape", "Portrait apps fill the landscape car screen", R.drawable.ic_screen_rotation),
+            Item(DOCK, "Dock settings", "Wallpaper dimming and blur", R.drawable.ic_menu_dock),
+            Item(DEFAULT_MAP, "Default map", "Map app used on the dashboard", R.drawable.ic_menu_map),
+            Item(DISPLAY, "Display", "Stream resolution scale and target frame rate", R.drawable.ic_menu_display),
         )
 
     fun titleOf(id: Int): String = ALL.first { it.id == id }.title

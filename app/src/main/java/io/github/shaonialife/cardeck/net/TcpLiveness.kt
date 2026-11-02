@@ -46,7 +46,7 @@ object TcpLiveness {
     ) {
         runCatching { socket.keepAlive = true }
         if (Build.VERSION.SDK_INT < 26) {
-            log("TCP: $label 无法调优 keepalive（API ${Build.VERSION.SDK_INT} < 26）")
+            log("TCP: $label can't tune keepalive (API ${Build.VERSION.SDK_INT} < 26)")
             return
         }
         try {
@@ -62,12 +62,12 @@ object TcpLiveness {
                 tune(fd)
             }
             log(
-                "TCP: $label keepalive 已启用" +
-                    "（idle=${KEEP_IDLE_SECONDS}s interval=${KEEP_INTERVAL_SECONDS}s count=$KEEP_COUNT" +
-                    " userTimeout=${USER_TIMEOUT_MILLIS}ms）",
+                "TCP: $label keepalive enabled" +
+                    " (idle=${KEEP_IDLE_SECONDS}s interval=${KEEP_INTERVAL_SECONDS}s count=$KEEP_COUNT" +
+                    " userTimeout=${USER_TIMEOUT_MILLIS}ms)",
             )
         } catch (error: Exception) {
-            log("TCP: $label keepalive 调优失败（${error.javaClass.simpleName}: ${error.message}）")
+            log("TCP: $label keepalive tuning failed (${error.javaClass.simpleName}: ${error.message})")
         }
     }
 

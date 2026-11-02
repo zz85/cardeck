@@ -25,7 +25,7 @@ import java.util.ArrayDeque
 object BridgeClient {
     /** 连接状态（设置页展示；主线程读）。 */
     @Volatile
-    var stateText: String = "未连接"
+    var stateText: String = "Not connected"
         private set
 
     /** 下次自动重连的时刻（elapsedRealtime；0 = 无排定）。倒计时显示用。 */
@@ -50,7 +50,7 @@ object BridgeClient {
         if (next > 0) {
             val remain = ((next - android.os.SystemClock.elapsedRealtime()) / 1000 + 1).coerceAtLeast(0)
             val reason = lastDisconnectReason
-            return "连接断开${if (reason != null) "：$reason" else ""}（${remain}s 后自动重试）"
+            return "Disconnected${if (reason != null) ": $reason" else ""} (auto-retry in ${remain}s)"
         }
         return stateText
     }
@@ -111,8 +111,8 @@ object BridgeClient {
         running = false
         route?.stop()
         route = null
-        ws?.close(1000, "客户端停止")
-        setState("已断开")
+        ws?.close(1000, "Client stopped")
+        setState("Disconnected")
     }
 
     /** 蜂窝互联网通道（供 APK 下载等复用）：车机会话期间进程默认网络被绑到
@@ -143,7 +143,7 @@ object BridgeClient {
             val ctx = appContext ?: return
             val url = BridgePrefs.serverUrl(ctx)
             if (url.isBlank()) {
-                setState("未配置服务器地址")
+                setState("Server address not set")
                 sleepQuiet(3_000)
                 continue
             }
@@ -157,7 +157,7 @@ object BridgeClient {
                     url,
                     object : WsClient.Listener {
                         override fun onOpen() {
-                            setState("已连接，配对中…")
+                            setState("Connected, pairing...")
                             // 协议由设备侧驱动：先发 hello（含配对码），服务端校验后才回
                             // welcome——若等 welcome 再发 hello 会与服务端互等死锁，
                             // 状态永远停在「配对中…」（首台真机实测踩到）
@@ -167,20 +167,20 @@ object BridgeClient {
                         override fun onText(text: String) = onServerMessage(text)
 
                         override fun onClosed(reason: String) {
-                            setState("连接断开：$reason")
+                            setState("Disconnected: $reason")
                             lastDisconnectReason = reason.take(40)
-                            debugLog("连接断开：$reason")
+                            debugLog("Disconnected: $reason")
                         }
                     },
                     network,
                 )
             ws = client
-            setState("连接中…")
+            setState("Connecting...")
             nextRetryAtElapsed = 0
             connUsedDefaultNetwork = network == null
             debugLog(
-                "连接尝试 #$attempt 路由=${if (network != null) "蜂窝" else "默认网络"} " +
-                    "退避=${backoffMs}ms（backoff 重置说明上一轮曾成功）",
+                "Connect attempt #$attempt route=${if (network != null) "cellular" else "default network"} " +
+                    "backoff=${backoffMs}ms (backoff reset means the previous round succeeded)",
             )
             try {
                 client.connect()
@@ -192,7 +192,7 @@ object BridgeClient {
                 // 必须在流内可见，否则远程侧只看到「日志停更」猜不出原因）。
                 // 默认网络失败要上报路由器：假 VALIDATED（缓存判定）下每轮都撞
                 // 同一条死路，noteFailure 后下一轮切蜂窝。
-                debugLog("连接失败（${error.message ?: error.javaClass.simpleName}）")
+                debugLog("Connect failed (${error.message ?: error.javaClass.simpleName})")
                 lastDisconnectReason = (error.message ?: error.javaClass.simpleName).take(40)
                 route?.noteFailure(connUsedDefaultNetwork)
             }
@@ -230,9 +230,9 @@ object BridgeClient {
         when (msg.optString("t")) {
             "welcome" -> {
                 if (msg.optBoolean("ok")) {
-                    setState("已连接（${msg.optLong("pairedAt")}）")
+                    setState("Connected (${msg.optLong("pairedAt")})")
                     nextRetryAtElapsed = 0
-                    debugLog("已连上调试服务器（配对通过），日志流恢复")
+                    debugLog("Connected to debug server (paired), log stream resumed")
                     // 本轮连接走默认网络且真通了：清除「假 VALIDATED」失败判定
                     route?.noteSuccess(connUsedDefaultNetwork)
                     if (!wasConnected) {
@@ -242,8 +242,8 @@ object BridgeClient {
                     // 全量回补：服务端按 seq 去重并留环形缓冲
                     sendLogBatch(since = 0)
                 } else {
-                    setState("配对被拒：${msg.optString("error")}")
-                    ws?.close(1008, "配对被拒")
+                    setState("Pairing rejected: ${msg.optString("error")}")
+                    ws?.close(1008, "Pairing rejected")
                 }
             }
 
@@ -312,7 +312,7 @@ object BridgeClient {
                             .put("truncated", raw.size >= maxKB * 1024)
                             .put("gzB64", android.util.Base64.encodeToString(gz, android.util.Base64.NO_WRAP))
                     send(payload)
-                    debugLog("文件日志已回传（原始 ${raw.size / 1024}KB → gzip ${gz.size / 1024}KB）")
+                    debugLog("File log uploaded (raw ${raw.size / 1024}KB → gzip ${gz.size / 1024}KB)")
                 }
             }
         }

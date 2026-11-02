@@ -53,7 +53,7 @@ object AudioSyncPacket {
         ntp: ByteArray,
         first: Boolean,
     ): ByteArray {
-        require(ntp.size == 8) { "NTP 时间必须是 8 字节，实际 ${ntp.size}" }
+        require(ntp.size == 8) { "NTP time must be 8 bytes, got ${ntp.size}" }
         val packet = ByteArray(SIZE)
         packet[0] = (BASE_FIRST_BYTE or (if (first) EXTENSION_BIT else 0)).toByte()
         packet[1] = PT_SYNC.toByte()

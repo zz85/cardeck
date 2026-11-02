@@ -126,13 +126,13 @@ object MfiLengthMemory {
     /** 打印用：把记忆压成一行日志（便于对照实测）。 */
     fun describe(entry: Entry): String =
         if (entry.isEmpty) {
-            "无"
+            "none"
         } else {
             buildList {
-                entry.succeeded?.let { add("成功=${it}B") }
-                if (entry.silent.isNotEmpty()) add("静默=${entry.silent.sorted().joinToString("/")}B")
-                if (entry.rejected.isNotEmpty()) add("被拒=${entry.rejected.sorted().joinToString("/")}B")
-            }.joinToString("，")
+                entry.succeeded?.let { add("ok=${it}B") }
+                if (entry.silent.isNotEmpty()) add("silent=${entry.silent.sorted().joinToString("/")}B")
+                if (entry.rejected.isNotEmpty()) add("rejected=${entry.rejected.sorted().joinToString("/")}B")
+            }.joinToString(", ")
         }
 
     /**

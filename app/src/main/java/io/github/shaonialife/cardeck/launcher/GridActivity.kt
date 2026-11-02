@@ -221,12 +221,12 @@ class GridActivity : AppCompatActivity() {
         val missingDueToPermission =
             now != null && title == null && !MediaSessionsState.accessGranted
         panel.findViewById<TextView>(R.id.dashMediaTitle).text =
-            title ?: if (missingDueToPermission) "无法读取播放信息" else "未在播放"
+            title ?: if (missingDueToPermission) "Can't read playback info" else "Not playing"
         panel.findViewById<TextView>(R.id.dashMediaArtist).text =
             artist
                 ?: when {
-                    missingDueToPermission -> "未授予「通知使用权」——请在系统设置中开启"
-                    now?.playing == true -> "正在播放"
+                    missingDueToPermission -> "Notification access not granted - enable it in system settings"
+                    now?.playing == true -> "Now playing"
                     else -> ""
                 }
         panel.findViewById<ImageView>(R.id.dashPlayPause).setImageResource(
@@ -285,7 +285,7 @@ class GridActivity : AppCompatActivity() {
                         packageManager.getLaunchIntentForPackage(pkg)?.component
                             ?: run {
                                 VirtualLauncher.logSink
-                                    ?.invoke("MEDIA: $pkg 无可启动入口，忽略封面点击")
+                                    ?.invoke("MEDIA: $pkg has no launch entry, ignoring cover tap")
                                 return@setOnClickListener
                             }
                     Bg.run("launch-app") { VirtualLauncher.launchApp(component) }
@@ -448,7 +448,7 @@ class GridActivity : AppCompatActivity() {
                 )
                 runOnUiThread { view.setImageBitmap(bitmap) }
             } else {
-                VirtualLauncher.logSink?.invoke("WALLPAPER-GRID: 解码失败")
+                VirtualLauncher.logSink?.invoke("WALLPAPER-GRID: decode failed")
             }
         }
     }

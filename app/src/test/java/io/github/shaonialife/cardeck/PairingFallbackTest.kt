@@ -38,8 +38,8 @@ class PairingFallbackTest {
                 attemptedPairing = true,
                 pairingUnsupported = false,
             )
-        assertFalse("403=车机未就绪，断 BT 会错过 18~20s 后的自动重邀", f.useBtRetireHack)
-        assertFalse("403=信任已建立，明文必被拒", f.usePlainSession)
+        assertFalse("403=head unit not ready; dropping BT would miss the auto re-invite after 18~20s", f.useBtRetireHack)
+        assertFalse("403=trust already established; plaintext will be rejected", f.usePlainSession)
     }
 
     @Test

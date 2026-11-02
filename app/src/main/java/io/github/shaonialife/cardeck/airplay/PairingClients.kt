@@ -42,13 +42,13 @@ class PairSetupClient(
                     ),
                 ),
             )
-        val salt = m2[Tlv8.TYPE_SALT] ?: throw IOException("pair-setup M2 缺少 salt")
-        val serverPublic = m2[Tlv8.TYPE_PUBLIC_KEY] ?: throw IOException("pair-setup M2 缺少 publicKey")
-        log("pair-setup: M2 收到 SRP 参数 salt=${salt.size}B B=${serverPublic.size}B")
+        val salt = m2[Tlv8.TYPE_SALT] ?: throw IOException("pair-setup M2 missing salt")
+        val serverPublic = m2[Tlv8.TYPE_PUBLIC_KEY] ?: throw IOException("pair-setup M2 missing publicKey")
+        log("pair-setup: M2 got SRP params salt=${salt.size}B B=${serverPublic.size}B")
 
         // M3: 客户端公钥 A + 证明 M1
         val srp = Srp6aClient.start(salt, serverPublic)
-        val clientProof = srp.clientProof() ?: throw IOException("pair-setup: SRP B 非法")
+        val clientProof = srp.clientProof() ?: throw IOException("pair-setup: invalid SRP B")
         val m4 =
             Tlv8.decode(
                 transport.exchange(
@@ -62,10 +62,10 @@ class PairSetupClient(
                     ),
                 ),
             )
-        val serverProof = m4[Tlv8.TYPE_PROOF] ?: throw IOException("pair-setup M4 缺少 proof")
-        if (!srp.serverProofValid(serverProof)) throw IOException("pair-setup: 服务器证明校验失败")
-        val sessionKey = srp.sessionKey ?: throw IOException("pair-setup: 会话密钥缺失")
-        log("pair-setup: M4 SRP 互验通过")
+        val serverProof = m4[Tlv8.TYPE_PROOF] ?: throw IOException("pair-setup M4 missing proof")
+        if (!srp.serverProofValid(serverProof)) throw IOException("pair-setup: server proof verification failed")
+        val sessionKey = srp.sessionKey ?: throw IOException("pair-setup: session key missing")
+        log("pair-setup: M4 SRP mutual verification OK")
 
         // M5: 加密信封提交长期公钥
         val encryptionKey =
@@ -110,9 +110,9 @@ class PairSetupClient(
                 ),
             )
         if (m6[Tlv8.TYPE_STATE]?.firstOrNull()?.toInt() != 6) {
-            throw IOException("pair-setup M6 状态非 6：${m6[Tlv8.TYPE_ERROR]?.firstOrNull()}")
+            throw IOException("pair-setup M6 state != 6: ${m6[Tlv8.TYPE_ERROR]?.firstOrNull()}")
         }
-        log("pair-setup: ✓ M6 完成，接收端已保存我们的长期公钥")
+        log("pair-setup: ✓ M6 done, receiver saved our long-term public key")
 
         // 解析 M6 加密信封里的接收端身份（完整性校验）
         val encrypted = m6[Tlv8.TYPE_ENCRYPTED_DATA] ?: return null
@@ -136,8 +136,8 @@ class PairSetupClient(
                 receiverSignature,
             )
         log(
-            "pair-setup: 接收端身份 id=${receiverId.toString(Charsets.UTF_8)} " +
-                "pub=${receiverKey.toHexString().take(16)}… 签名校验=$valid",
+            "pair-setup: receiver identity id=${receiverId.toString(Charsets.UTF_8)} " +
+                "pub=${receiverKey.toHexString().take(16)}... signatureValid=$valid",
         )
         return ReceiverIdentity(receiverId.toString(Charsets.UTF_8), receiverKey)
     }
@@ -178,8 +178,8 @@ class PairVerifyClient(
                     ),
                 ),
             )
-        val receiverEphemeral = m2[Tlv8.TYPE_PUBLIC_KEY] ?: throw IOException("pair-verify M2 缺少 publicKey")
-        val encrypted = m2[Tlv8.TYPE_ENCRYPTED_DATA] ?: throw IOException("pair-verify M2 缺少 encryptedData")
+        val receiverEphemeral = m2[Tlv8.TYPE_PUBLIC_KEY] ?: throw IOException("pair-verify M2 missing publicKey")
+        val encrypted = m2[Tlv8.TYPE_ENCRYPTED_DATA] ?: throw IOException("pair-verify M2 missing encryptedData")
 
         val shared = AirPlayCrypto.x25519Shared(ephemeral.privateKey, receiverEphemeral)
         val encryptionKey =
@@ -192,8 +192,8 @@ class PairVerifyClient(
             Tlv8.decode(
                 AirPlayCrypto.chachaOpen(encryptionKey, AirPlayCrypto.nonceLabel("PV-Msg02"), encrypted),
             )
-        val receiverId = inner[Tlv8.TYPE_IDENTIFIER] ?: throw IOException("pair-verify M2 信封缺少 identifier")
-        val receiverSignature = inner[Tlv8.TYPE_SIGNATURE] ?: throw IOException("pair-verify M2 信封缺少 signature")
+        val receiverId = inner[Tlv8.TYPE_IDENTIFIER] ?: throw IOException("pair-verify M2 envelope missing identifier")
+        val receiverSignature = inner[Tlv8.TYPE_SIGNATURE] ?: throw IOException("pair-verify M2 envelope missing signature")
 
         // 用 mDNS/0x4301 提供的接收端静态公钥验证（有则验，无则跳过）
         if (receiverStaticPublicKey != null) {
@@ -203,7 +203,7 @@ class PairVerifyClient(
                     receiverEphemeral + receiverId + ephemeral.publicKey,
                     receiverSignature,
                 )
-            log("pair-verify: 接收端签名校验（对照 pk）=$valid")
+            log("pair-verify: receiver signature valid (vs pk)=$valid")
         }
 
         // M3: 我们的长期签名
@@ -236,9 +236,9 @@ class PairVerifyClient(
                 ),
             )
         if (m4[Tlv8.TYPE_STATE]?.firstOrNull()?.toInt() != 4) {
-            throw IOException("pair-verify M4 状态非 4：${m4[Tlv8.TYPE_ERROR]?.firstOrNull()}")
+            throw IOException("pair-verify M4 state != 4: ${m4[Tlv8.TYPE_ERROR]?.firstOrNull()}")
         }
-        log("pair-verify: ✓ 完成，派生控制通道密钥")
+        log("pair-verify: ✓ done, derived control channel keys")
 
         // 方向对照接收端实现：接收端 readKey="Control-Write-…"（即我们发出的方向）
         val phoneWriteKey =

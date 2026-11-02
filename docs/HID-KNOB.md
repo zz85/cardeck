@@ -1,86 +1,86 @@
-# 车机 HID 输入：方向盘媒体键 + iDrive 旋钮（宝马 iD8.5）
+# Head unit HID input: steering-wheel media keys + iDrive knob (BMW iD8.5)
 
-> 2026-10-23。目标：方向盘切歌/暂停（全局媒体键）、iDrive 旋钮旋转与四向拨动（虚拟屏焦点导航）。
+> 2026-10-23. Goal: skip/pause from the steering wheel (global media keys), iDrive knob rotation and 4-way nudge (virtual display focus navigation).
 
-## 1. 链路（现状 = 已修好的部分）
+## 1. Pipeline (current state = the parts already fixed)
 
 ```
-车机 /info → hidDevices[] (uuid + hidDescriptor)
-  → 会话建立时对**每一个** uuid 发 hidSetInputMode(mode=0)   ← 早就遍历了全部设备
-  → 车机开始下发 hidSendReport（事件通道）/ 0x6802 AccessoryHIDReport（iAP2 隧道）
-  → 按**设备描述符**分流（不按 uuid、不按车机型号）：
-       Consumer 页 0x0C      → MediaKey（AudioManager 全局分发，无需焦点）
-       Digitizer 页 0x0D     → 触摸（TouchRouter 坐标注入）
-       Generic Desktop 0x01  → 旋钮/四向（本次新增，DPAD 注入虚拟屏）
+Head unit /info → hidDevices[] (uuid + hidDescriptor)
+  → at session setup send hidSetInputMode(mode=0) for **every** uuid   ← already iterated over all devices
+  → head unit starts sending hidSendReport (event channel) / 0x6802 AccessoryHIDReport (iAP2 tunnel)
+  → route by **device descriptor** (not by uuid, not by head unit model):
+       Consumer page 0x0C      → MediaKey (AudioManager global dispatch, no focus needed)
+       Digitizer page 0x0D     → touch (TouchRouter coordinate injection)
+       Generic Desktop 0x01    → knob/4-way (new this time, DPAD injected into virtual display)
 ```
 
-**不要改成「按 uuid/名称猜设备」**：`uuid` 各车机任意（奥迪发 `"0"/"1"`、DiPlay 发整数），
-描述符才是唯一稳定信号（`ConsumerKeys.parseDescriptor` / `HidNavigation.isNavigationDevice`）。
+**Don't change this to "guess the device by uuid/name"**: `uuid` is arbitrary per head unit (Audi sends `"0"/"1"`, DiPlay sends integers);
+the descriptor is the only stable signal (`ConsumerKeys.parseDescriptor` / `HidNavigation.isNavigationDevice`).
 
-## 2. 媒体键（已有）
+## 2. Media keys (existing)
 
-`ConsumerKeys` 解析描述符得到 Usage 数组，按 **Array/Variable 两种 HID 语义**分别解码
-（Array：字节=下标；Variable：每 usage 1 bit），再映射 `KEYCODE_MEDIA_*`，
-由 `SessionController.dispatchMediaKey` → `AudioManager.dispatchMediaKeyEvent` 全局分发
-（焦点在哪都生效，车机界面停在导航也能切歌）。
+`ConsumerKeys` parses the descriptor into a Usage array and decodes according to **the two HID semantics, Array/Variable**,
+separately (Array: byte = index; Variable: 1 bit per usage), then maps to `KEYCODE_MEDIA_*`,
+dispatched globally via `SessionController.dispatchMediaKey` → `AudioManager.dispatchMediaKeyEvent`
+(works wherever focus is; you can skip tracks even while the head unit shows navigation).
 
-## 3. 旋钮/四向（本次新增）
+## 3. Knob/4-way (new this time)
 
-`input/HidNavigation` 判定导航设备：描述符有 Generic Desktop 页 0x01 且含
-**Wheel(0x38) 或 Hat(0x39)**，且不是 Digitizer 页（触摸屏排除）。
+`input/HidNavigation` decides it's a navigation device when the descriptor has Generic Desktop page 0x01 and contains
+**Wheel(0x38) or Hat(0x39)**, and it isn't a Digitizer page (touchscreens excluded).
 
-报文解析（描述符缺失时按 2~4 字节兜底）：
+Report parsing (falls back to 2~4 bytes when the descriptor is missing):
 
-| 位置 | 语义 |
+| Position | Meaning |
 |---|---|
-| 末字节 | **有符号**旋钮步进（正=顺时针 → DPAD_DOWN，负 → DPAD_UP，单帧最多 5 步） |
-| 前面的字节 | 按钮位图，**上升沿**触发：bit0=确认、1=上、2=下、3=左、4=右、5=返回 |
-| Hat 设备（0x39，1 字节） | 低 4 位=8 向帽（0 上 / 2 右 / 4 下 / 6 左，其余=松开） |
+| Last byte | **Signed** knob steps (positive = clockwise → DPAD_DOWN, negative → DPAD_UP, at most 5 steps per frame) |
+| Preceding bytes | Button bitmap, triggered on **rising edge**: bit0=confirm, 1=up, 2=down, 3=left, 4=right, 5=back |
+| Hat device (0x39, 1 byte) | Low 4 bits = 8-way hat (0 up / 2 right / 4 down / 6 left, anything else = released) |
 
-注入走 `ICarInput.keyEvent(displayId, keyCode)`（UserService 的 `injectInputEvent`，
-`KeyEvent.setDisplayId` 直指虚拟屏，毫秒级）；失败回退 `input -d <id> keyevent <code>`。
-目标屏 = `VirtualLauncher.activeAppDisplayId()`（桌面网格 / 打开中的应用屏）。
+Injection goes through `ICarInput.keyEvent(displayId, keyCode)` (UserService's `injectInputEvent`,
+`KeyEvent.setDisplayId` targets the virtual display directly, millisecond-level); on failure falls back to `input -d <id> keyevent <code>`.
+Target display = `VirtualLauncher.activeAppDisplayId()` (launcher grid / currently open app display).
 
-**为什么不能全局分发 DPAD**：DPAD 需要焦点系统，全局分发会落到手机主屏；只有注入到
-车机虚拟屏才能让车机桌面/应用响应。
+**Why DPAD can't be dispatched globally**: DPAD needs the focus system; global dispatch lands on the phone's main display; only injecting into
+the head unit virtual display makes the head unit launcher/apps respond.
 
-## 4. 焦点高亮（旋钮可见性）
+## 4. Focus highlight (knob visibility)
 
-- `res/drawable/focus_ring.xml`：只在 `state_focused` 时画 3dp 青色描边；
-- 网格单元（`GridActivity.PageHolder.bind`）：`isFocusable = true` +
-  `foreground = focus_ring`（foreground 不覆盖代码设置的 background）；
-- 按键事件会自动让窗口退出 touch mode（`focusableInTouchMode=false` 即可拿到焦点）。
+- `res/drawable/focus_ring.xml`: draws a 3dp cyan stroke only in `state_focused`;
+- Grid cells (`GridActivity.PageHolder.bind`): `isFocusable = true` +
+  `foreground = focus_ring` (foreground doesn't override the background set in code);
+- Key events automatically take the window out of touch mode (`focusableInTouchMode=false` is enough to get focus).
 
-**已知限制**：dock 是**独立 display**，DPAD 不会跨屏移动焦点——旋钮只能在应用屏内
-移动。要支持「旋钮推到左边缘跳到 dock」需要 Launcher 侧拦截边缘 DPAD 并切屏/换焦点，
-未实现（需要真机确认车机行为后再做）。
+**Known limitation**: the dock is a **separate display**, and DPAD doesn't move focus across displays — the knob can only move within
+the app display. Supporting "push the knob to the left edge to jump to the dock" would require the Launcher to intercept edge DPAD and switch display/focus;
+not implemented (do it after confirming head unit behaviour on a real car).
 
-## 5. 键位校准（实车必做）
+## 5. Key calibration (required on a real car)
 
-不同 iD8.5 固件的报文布局/位序可能不同（`S18A-23-xx` vs `24-xx`），也可能走
-事件通道而非 0x6802。校准时：
+Different iD8.5 firmwares may have different report layouts/bit orders (`S18A-23-xx` vs `24-xx`), and may also use
+the event channel instead of 0x6802. To calibrate:
 
-1. 设置 → 显示 →「**HID 原始日志**」→ 开；
-2. 依次按 方向盘下一首 / 上一首 / 播放暂停 / 旋钮左旋右旋 / 旋钮按下 / 四向；
-3. 看 `files/main_debug.log`：
+1. Settings → Display → "**HID raw log**" → on;
+2. Press in turn: steering wheel next / previous / play-pause / knob rotate left & right / knob press / 4-way;
+3. Look at `files/main_debug.log`:
 
 ```
 HID-RAW: uuid=0 bytes=05 desc=27B
-EVENT: 车机媒体键 下一首（uuid=0 usage=0xb5 → keyCode=87）
+EVENT: Head unit media key Next (uuid=0 usage=0xb5 → keyCode=87)
 HID-RAW: uuid=1 bytes=00 02 desc=34B
-EVENT: 旋钮/导航键 下+下（uuid=1）
+EVENT: Knob/nav key Down+Down (uuid=1)
 ```
 
-4. 若「下一首」打印的是 `usage=0xb5` 但没反应 → 问题在分发不在映射；
-   若打印的字节与预期不符 → 按实际字节改 `ConsumerKeys.keyUsage` 映射表或
-   `HidNavigation` 的位定义；若 `HID-RAW` 一条都没有 → 车机没发（多半是
-   `hidSetInputMode` 未武装到该 uuid，或该车机把按键放在 iAP2 `0x6802`）。
+4. If "Next" prints `usage=0xb5` but nothing happens → the problem is in dispatch, not mapping;
+   if the printed bytes don't match expectations → adjust the `ConsumerKeys.keyUsage` mapping table or
+   `HidNavigation`'s bit definitions according to the actual bytes; if there's not a single `HID-RAW` line → the head unit isn't sending (most likely
+   `hidSetInputMode` wasn't armed for that uuid, or this head unit puts the keys on iAP2 `0x6802`).
 
-## 6. 排错速查
+## 6. Quick troubleshooting
 
-| 现象 | 先看 |
+| Symptom | Check first |
 |---|---|
-| 完全没日志 | `/info` 有没有 hidDevices？`hidSetInputMode` 是否对每个 uuid 都发了 |
-| 有 HID-RAW 但没反应 | 描述符是否被识别成 Consumer/导航（日志里的 `desc=` 字节数 + 解析结果） |
-| 旋钮有日志但焦点不动 | 虚拟屏是否可聚焦视图（网格单元 `isFocusable`）、注入 displayId 是否正确 |
-| 方向盘切歌无效 | `dispatchMediaKey` 是否被调用；系统当前媒体会话是否存在 |
+| No log at all | Does `/info` have hidDevices? Was `hidSetInputMode` sent for every uuid? |
+| HID-RAW present but no reaction | Was the descriptor recognized as Consumer/navigation (byte count in `desc=` in the log + parse result)? |
+| Knob logs appear but focus doesn't move | Does the virtual display have focusable views (grid cell `isFocusable`)? Is the injected displayId correct? |
+| Steering-wheel track skip doesn't work | Is `dispatchMediaKey` called? Does a system media session currently exist? |

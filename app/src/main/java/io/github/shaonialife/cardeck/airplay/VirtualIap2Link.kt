@@ -198,7 +198,7 @@ class VirtualIap2Link(
             if (mib3Armed) return
             mib3Armed = true
             sendControlIap(Iap2LinkEngine.MARKER)
-            log("IAPLINK: MIB3 detect 已发（控制通道 iAPSendMessage，代际=$generation）——等待车机")
+            log("IAPLINK: MIB3 detect sent (control channel iAPSendMessage, generation=$generation) - waiting for head unit")
         }
     }
 
@@ -210,7 +210,7 @@ class VirtualIap2Link(
         synchronized(lock) {
             if (this.generation == generation) return
             this.generation = generation
-            log("IAPLINK: 链路代际 → $generation")
+            log("IAPLINK: link generation → $generation")
         }
     }
 
@@ -246,8 +246,8 @@ class VirtualIap2Link(
         controlSynRoundStartedAtMs = now
         engine.initiate(now)
         log(
-            "IAPLINK: 控制通道 marker + 本表同步包（第 $controlSynRounds/$MAX_CONTROL_SYN_ROUNDS 轮，$reason）" +
-                "——等车机同步包（FF5A）",
+            "IAPLINK: control channel marker + own-table sync (round $controlSynRounds/$MAX_CONTROL_SYN_ROUNDS, $reason)" +
+                " - waiting for head unit sync (FF5A)",
         )
         drainLocked()
     }
@@ -278,10 +278,10 @@ class VirtualIap2Link(
                             if (!eventLinkArmed && mib3MarkerIgnores >= EVENT_LINK_MARKER_THRESHOLD) {
                                 eventLinkArmed = true
                                 log(
-                                    "IAPLINK: 车机连续发 SYN marker ×$mib3MarkerIgnores" +
-                                        "（它在等我们的会话表）→ 控制通道补发协商轮次",
+                                    "IAPLINK: head unit keeps sending SYN marker ×$mib3MarkerIgnores" +
+                                        " (it is waiting for our session table) → resending negotiation on control channel",
                                 )
-                                startControlRoundLocked("车机 marker 重发")
+                                startControlRoundLocked("head unit marker resent")
                             } else if (eventLinkArmed) {
                                 eventLinkMarkers++
                                 if (engine.state != Iap2LinkEngine.State.NORMAL && !controlSynGaveUp) {
@@ -292,25 +292,25 @@ class VirtualIap2Link(
                                             controlSynGaveUp = true
                                             engine.stopNegotiationRetries()
                                             log(
-                                                "IAPLINK: 控制通道 $MAX_CONTROL_SYN_ROUNDS 轮协商无应答——停止自动重发，" +
-                                                    "链路停在 ${engine.state}（车机若发 0x1D01 会自动继续）",
+                                                "IAPLINK: no reply in $MAX_CONTROL_SYN_ROUNDS control rounds - stop auto resend, " +
+                                                    "link stays at ${engine.state} (continues automatically if head unit sends 0x1D01)",
                                             )
                                         }
 
-                                        else -> startControlRoundLocked("上一轮 ${CONTROL_SYN_ROUND_MILLIS}ms 无应答")
+                                        else -> startControlRoundLocked("no reply in last ${CONTROL_SYN_ROUND_MILLIS}ms round")
                                     }
                                 }
                                 // 引擎节拍线程也会重发，这里把待发字节立刻冲出去
                                 drainLocked()
                                 if (eventLinkMarkers <= 3 || eventLinkMarkers % 20 == 0) {
                                     log(
-                                        "IAPLINK: 车机 marker（#$eventLinkMarkers）链路状态=${engine.state}" +
-                                            "（控制通道第 $controlSynRounds 轮）",
+                                        "IAPLINK: head unit marker (#$eventLinkMarkers) link state=${engine.state}" +
+                                            " (control channel round $controlSynRounds)",
                                     )
                                 }
                                 return
                             } else if (mib3MarkerIgnores <= 3) {
-                                log("IAPLINK: 车机 marker（#$mib3MarkerIgnores）——凑够 $EVENT_LINK_MARKER_THRESHOLD 个后补发协商")
+                                log("IAPLINK: head unit marker (#$mib3MarkerIgnores) - renegotiating after $EVENT_LINK_MARKER_THRESHOLD")
                             }
                         }
                     }
@@ -320,7 +320,7 @@ class VirtualIap2Link(
                     // 不走此链路语义
                     if (mib3DeferredLogs < 2) {
                         mib3DeferredLogs++
-                        log("IAPLINK: SETUP 前的车机 marker 暂不回应（布防后主动 detect）")
+                        log("IAPLINK: ignoring head unit marker before SETUP (will detect once armed)")
                     }
                     return
                 }
@@ -364,7 +364,7 @@ class VirtualIap2Link(
                     pendingEchoFlush = false
                     if (!tunnelEchoDelivered) {
                         tunnelEchoDelivered = true
-                        log("IAPLINK: ✓ 同步回显已写入隧道（链路协商完成，发送端 CSM 就绪）")
+                        log("IAPLINK: ✓ sync echo written to tunnel (link negotiated, sender CSM ready)")
                     }
                 }
             }
@@ -374,7 +374,7 @@ class VirtualIap2Link(
                 sendControlIap(out)
                 if (pendingEchoFlush) {
                     pendingEchoFlush = false
-                    log("IAPLINK: ✓ SYN|ACK 已投递控制通道——链路协商完成，启动控制会话")
+                    log("IAPLINK: ✓ SYN|ACK posted on control channel - link negotiated, starting control session")
                 }
             }
 
@@ -383,7 +383,7 @@ class VirtualIap2Link(
                 if (pendingEchoFlush) {
                     pendingEchoFlush = false
                     mib3SynAckQueued = true
-                    log("IAPLINK: ✓ MIB3 SYN|ACK 已投递控制通道——等待链路确认后启动 CSM")
+                    log("IAPLINK: ✓ MIB3 SYN|ACK posted on control channel - starting CSM after link confirm")
                 }
             }
 
@@ -402,7 +402,7 @@ class VirtualIap2Link(
                     handleFrameLocked(event.bytes)
 
                 is Iap2LinkEngine.Event.Dead -> {
-                    log("IAPLINK: 虚拟链路终止 - ${event.reason ?: "EOF"}")
+                    log("IAPLINK: virtual link terminated - ${event.reason ?: "EOF"}")
                     return
                 }
             }
@@ -420,7 +420,7 @@ class VirtualIap2Link(
         val state = engine.state
         if (state == lastLinkState) return
         lastLinkState = state
-        log("IAPLINK: 链路状态 → $state（NORMAL 才可能收到车机 0x6800/0x6802 媒体键）")
+        log("IAPLINK: link state → $state (head unit 0x6800/0x6802 media keys only arrive in NORMAL)")
     }
 
     /** MFi 挑战静默超时：记入该车机的记忆并换下一档重试（节拍线程每 200ms 驱动一次）。 */
@@ -430,7 +430,7 @@ class VirtualIap2Link(
         if (nowMillis() - mfiChallengeSentAtMs < mfiWindowMillis) return
         val failed = mfiCurrentLength
         MfiLengthMemory.recordSilent(mfiContext, identity, failed)
-        log("IAPLINK: 隧道 MFi ${failed}B 静默 ${mfiWindowMillis}ms——记入记忆，换下一档重试")
+        log("IAPLINK: tunnel MFi ${failed}B silent ${mfiWindowMillis}ms - remembered, retrying next length")
         mfiCurrentLength = 0
         startNextMfiChallengeLocked()
     }
@@ -446,14 +446,14 @@ class VirtualIap2Link(
             mfiOrder = MfiLengthMemory.orderAttempts(TUNNEL_MFI_BASELINE, mfiMemory)
             if (!mfiMemory.isEmpty) {
                 log(
-                    "IAPLINK: 隧道 MFi 按车机记忆：${MfiLengthMemory.describe(mfiMemory)}" +
-                        " → 本轮顺序 ${mfiOrder.joinToString("/")}B",
+                    "IAPLINK: tunnel MFi from head unit memory: ${MfiLengthMemory.describe(mfiMemory)}" +
+                        " → order this round ${mfiOrder.joinToString("/")}B",
                 )
             }
         }
         mfiPosition += 1
         if (mfiPosition >= mfiOrder.size) {
-            log("IAPLINK: 隧道 MFi 挑战全部无应答——跳过校验直接 0xaa05（由车机后续行为判定）")
+            log("IAPLINK: no reply to any tunnel MFi challenge - skipping to 0xaa05 (head unit behaviour decides)")
             mfiFinished = true
             mib3AuthStage = 4
             sendCsmLocked(Iap2MessageIds.MFI_AUTHENTICATION_SUCCEEDED)
@@ -472,7 +472,7 @@ class VirtualIap2Link(
         val challenge = ByteArray(mfiCurrentLength).also { SecureRandom().nextBytes(it) }
         sendCsmLocked(Iap2MessageIds.MFI_REQUEST_CHALLENGE, Iap2Csm.param(0, challenge))
         mib3AuthStage = 3
-        log("IAPLINK: 隧道 tx=0xaa02 challenge=${mfiCurrentLength}B（第 ${mfiPosition + 1} 次，窗口 ${mfiWindowMillis}ms）")
+        log("IAPLINK: tunnel tx=0xaa02 challenge=${mfiCurrentLength}B (attempt ${mfiPosition + 1}, window ${mfiWindowMillis}ms)")
     }
 
     /**
@@ -505,7 +505,7 @@ class VirtualIap2Link(
         val frame = Iap2Csm.encode(messageId, body)
         val ok = engine.sendControl(frame, System.nanoTime() / 1_000_000L)
         log(
-            "IAPLINK: 隧道 tx 0x${messageId.toString(16)} " +
+            "IAPLINK: tunnel tx 0x${messageId.toString(16)} " +
                 "(${Iap2MessageIds.nameOf(messageId)}) ${frame.size}B ok=$ok",
         )
     }
@@ -518,7 +518,7 @@ class VirtualIap2Link(
         // （长度值），排查时极易被带偏（2026-10-23 实际误导过一轮）。
         val messageId = ((frame[4].toInt() and 0xFF) shl 8) or (frame[5].toInt() and 0xFF)
         log(
-            "IAPLINK: 隧道 tx 0x${messageId.toString(16)} " +
+            "IAPLINK: tunnel tx 0x${messageId.toString(16)} " +
                 "(${Iap2MessageIds.nameOf(messageId)}) ${frame.size}B raw ok=$ok",
         )
     }
@@ -547,7 +547,7 @@ class VirtualIap2Link(
                         .parseParams(frame.body)
                         .associateBy { it.id }
                 log(
-                    "IAPLINK: 隧道 rx 0x1d01 接收端身份 " +
+                    "IAPLINK: tunnel rx 0x1d01 receiver identity " +
                         "name=${params[0]?.value?.decodeToString()?.trimEnd('\u0000')} " +
                         "model=${params[1]?.value?.decodeToString()?.trimEnd('\u0000')}",
                 )
@@ -557,16 +557,16 @@ class VirtualIap2Link(
                 params[6]?.value?.let { raw ->
                     val sends = u16List(raw)
                     log(
-                        "IAPLINK: 车机发送清单(${sends.size})=" +
+                        "IAPLINK: head unit send list(${sends.size})=" +
                             sends.joinToString(" ") { "0x%04x".format(it) } +
-                            " 含HID0x6800=${sends.contains(Iap2MessageIds.START_HID)}" +
-                            " 含0x6802=${sends.contains(Iap2MessageIds.ACCESSORY_HID_REPORT)}",
+                            " hasHID0x6800=${sends.contains(Iap2MessageIds.START_HID)}" +
+                            " has0x6802=${sends.contains(Iap2MessageIds.ACCESSORY_HID_REPORT)}",
                     )
                 }
                 params[7]?.value?.let { raw ->
                     val receives = u16List(raw)
                     log(
-                        "IAPLINK: 车机可收清单(${receives.size})=" +
+                        "IAPLINK: head unit receive list(${receives.size})=" +
                             receives.joinToString(" ") { "0x%04x".format(it) },
                     )
                 }
@@ -583,13 +583,13 @@ class VirtualIap2Link(
                 if (!mib3 || mib3AuthStage != 1) return
                 sendCsmLocked(ids.MFI_REQUEST_CERTIFICATE)
                 mib3AuthStage = 2
-                log("IAPLINK: MIB3 0xaa06（auth serial）→ 再发 0xaa00")
+                log("IAPLINK: MIB3 0xaa06 (auth serial) → resend 0xaa00")
             }
 
             ids.MFI_AUTHENTICATION_FAILED -> {
                 if (!mib3 || mfiFinished) return
                 mfiIdentity?.let { MfiLengthMemory.recordRejected(mfiContext, it, mfiCurrentLength) }
-                log("IAPLINK: 隧道 MFi ${mfiCurrentLength}B 被拒（0xaa04）——记入记忆，换下一档")
+                log("IAPLINK: tunnel MFi ${mfiCurrentLength}B rejected (0xaa04) - remembered, trying next length")
                 mfiCurrentLength = 0
                 startNextMfiChallengeLocked()
             }
@@ -610,7 +610,7 @@ class VirtualIap2Link(
             ids.MFI_RESPONSE -> {
                 if (mib3) {
                     mfiIdentity?.let { MfiLengthMemory.recordSuccess(mfiContext, it, mfiCurrentLength) }
-                    log("IAPLINK: 隧道 rx=0xaa03 签名 ${frame.body.size}B（${mfiCurrentLength}B 挑战成功，已记忆）")
+                    log("IAPLINK: tunnel rx=0xaa03 signature ${frame.body.size}B (${mfiCurrentLength}B challenge OK, remembered)")
                     mfiCurrentLength = 0
                     mfiFinished = true
                 }
@@ -619,14 +619,14 @@ class VirtualIap2Link(
                     mib3AuthStage = 4
                     sendMib3BurstLocked()
                 } else {
-                    log("IAPLINK: 隧道 MFi 完成——等待对端订阅（随后其标记隧道就绪）")
+                    log("IAPLINK: tunnel MFi done - waiting for peer subscriptions (then it marks tunnel ready)")
                 }
             }
 
             START_COMMUNICATIONS_UPDATES -> {
                 if (!mib3) return
                 sendRawCsmLocked(MIB3_COMMUNICATIONS_UPDATE_IDLE)
-                log("IAPLINK: MIB3 0x4157 → 0x4158（空态）")
+                log("IAPLINK: MIB3 0x4157 → 0x4158 (empty)")
             }
 
             START_CALL_STATE_UPDATES -> {
@@ -635,7 +635,7 @@ class VirtualIap2Link(
                     CALL_STATE_UPDATE,
                     Iap2Csm.param(0x0002, byteArrayOf(0)),
                 )
-                log("IAPLINK: MIB3 0x4154 → 0x4155（无通话）")
+                log("IAPLINK: MIB3 0x4154 → 0x4155 (no call)")
             }
 
             START_LIST_UPDATES -> {
@@ -647,7 +647,7 @@ class VirtualIap2Link(
                         Iap2Csm.param(0x0005, byteArrayOf(0)) +
                         Iap2Csm.param(0x0007, byteArrayOf(0, 0)),
                 )
-                log("IAPLINK: MIB3 0x4170 → 0x4171（空列表）")
+                log("IAPLINK: MIB3 0x4170 → 0x4171 (empty list)")
             }
 
             Iap2MessageIds.START_NOW_PLAYING_UPDATES -> {
@@ -655,7 +655,7 @@ class VirtualIap2Link(
                 sendRawCsmLocked(MIB3_NOW_PLAYING_UPDATE_IDLE)
                 // 仪表盘歌词/媒体卡的数据通路（0x5001 + file-transfer 封面）后续接
                 // MediaSessionsState——空态应答是 MIB3 存活的前置，先落这版。
-                log("IAPLINK: MIB3 0x5000 → 0x5001（空态）——仪表盘媒体数据待接")
+                log("IAPLINK: MIB3 0x5000 → 0x5001 (empty) - cluster media data not wired yet")
             }
 
             ids.START_HID -> {
@@ -665,11 +665,11 @@ class VirtualIap2Link(
                 if (descriptor != null) {
                     hidDescriptor = descriptor
                     log(
-                        "IAPLINK: 车机 0x6800 StartHID 描述符 ${descriptor.size}B hex=" +
+                        "IAPLINK: head unit 0x6800 StartHID descriptor ${descriptor.size}B hex=" +
                             descriptor.joinToString(" ") { "%02x".format(it) }.take(120),
                     )
                 } else {
-                    log("IAPLINK: 车机 0x6800 StartHID（无描述符）参数=${params.map { it.id }}")
+                    log("IAPLINK: head unit 0x6800 StartHID (no descriptor) params=${params.map { it.id }}")
                 }
             }
 
@@ -689,7 +689,7 @@ class VirtualIap2Link(
                 if (report != null && HidNavigation.isNavigationDevice(hidDescriptor)) {
                     val navKeys = HidNavigation.handle("iap2-hid", hidDescriptor, report)
                     if (navKeys.isNotEmpty()) {
-                        log("IAPLINK: 旋钮/导航键 " + navKeys.joinToString("+") { HidNavigation.nameOf(it) })
+                        log("IAPLINK: knob/nav keys " + navKeys.joinToString("+") { HidNavigation.nameOf(it) })
                         navKeys.forEach { onNavKey?.invoke(it) }
                     }
                 } else {
@@ -704,10 +704,10 @@ class VirtualIap2Link(
                     if (hidReportFrames < HID_REPORT_VERBOSE_FRAMES) {
                         hidReportFrames++
                         log(
-                            "IAPLINK: 车机 0x6802 params=" +
+                            "IAPLINK: head unit 0x6802 params=" +
                                 params.joinToString(",") { "${it.id}=" + it.value.joinToString("") { b -> "%02x".format(b) } } +
-                                " 报告=" + (report?.joinToString(" ") { "%02x".format(it) } ?: "空") +
-                                " 位图=" + (keyMap?.isArray?.let { if (it) "Array" else "Variable" } ?: "无描述符"),
+                                " report=" + (report?.joinToString(" ") { "%02x".format(it) } ?: "empty") +
+                                " bitmap=" + (keyMap?.isArray?.let { if (it) "Array" else "Variable" } ?: "no descriptor"),
                         )
                     }
                     fireHidKeysLocked(usages)
@@ -722,7 +722,7 @@ class VirtualIap2Link(
                 unknownCsmIds++
                 if (unknownCsmIds <= 20) {
                     log(
-                        "IAPLINK: 未处理的 CSM 0x${frame.messageId.toString(16)} " +
+                        "IAPLINK: unhandled CSM 0x${frame.messageId.toString(16)} " +
                             "(${Iap2MessageIds.nameOf(frame.messageId)}) ${frame.body.size}B hex=" +
                             frame.body.joinToString(" ") { "%02x".format(it) },
                     )
@@ -759,8 +759,8 @@ class VirtualIap2Link(
         for (usage in firing) {
             val keyCode = ConsumerKeys.keyCodeFor(usage)
             log(
-                "IAPLINK: 车机媒体键 ${ConsumerKeys.nameOf(usage)}(0x%02x) → keyCode=".format(usage) +
-                    (if (keyCode != 0) "$keyCode 已注入" else "无对应 Android 键（忽略）"),
+                "IAPLINK: head unit media key ${ConsumerKeys.nameOf(usage)}(0x%02x) → keyCode=".format(usage) +
+                    (if (keyCode != 0) "$keyCode injected" else "no matching Android key (ignored)"),
             )
             if (keyCode != 0) onMediaKey?.invoke(keyCode)
         }
@@ -792,7 +792,7 @@ class VirtualIap2Link(
         )
         sendRawCsmLocked(MIB3_START_LOCATION_INFORMATION)
         sendRawCsmLocked(MIB3_GPRMC_DATA_STATUS)
-        log("IAPLINK: MIB3 突发已发（会话标识 $sessionId）——等待车机订阅")
+        log("IAPLINK: MIB3 burst sent (session id $sessionId) - waiting for head unit subscriptions")
         if (!mib3ControlSessionNotified) {
             mib3ControlSessionNotified = true
             onControlSessionComplete?.invoke()
@@ -848,7 +848,7 @@ class VirtualIap2Link(
             maybeRespondControlCsmLocked(frame)
         }
         if (frames.isEmpty() && frameCount <= 10) {
-            log("IAPLINK: rx ${bytes.size}B（非 CSM）hex=" + bytes.joinToString(" ") { "%02x".format(it) }.take(160))
+            log("IAPLINK: rx ${bytes.size}B (non-CSM) hex=" + bytes.joinToString(" ") { "%02x".format(it) }.take(160))
         }
     }
 
@@ -873,7 +873,7 @@ class VirtualIap2Link(
         eaCount++
         val hex = bytes.joinToString(" ") { "%02x".format(it) }
         if (eaCount <= 30 || eaCount % 100 == 0) {
-            log("IAPLINK: EA 数据 #$eaCount ${bytes.size}B hex=${hex.take(200)}")
+            log("IAPLINK: EA data #$eaCount ${bytes.size}B hex=${hex.take(200)}")
         }
         onEaData?.invoke(bytes)
     }

@@ -87,7 +87,7 @@ class Iap2SenderSessionTest {
         pump.isDaemon = true
         pump.start()
 
-        assertTrue("晚到 0x4301 未触发端点回调", updateLatch.await(5, TimeUnit.SECONDS))
+        assertTrue("late 0x4301 didn't trigger endpoint callback", updateLatch.await(5, TimeUnit.SECONDS))
         val late = updates.get()
         assertNotNull(late)
         assertEquals("MockAP", late!!.ssid)
@@ -141,7 +141,7 @@ class Iap2SenderSessionTest {
         val pumpThread = Thread({ session.pumpIncomingForever() }, "phone-pump")
         pumpThread.isDaemon = true
         pumpThread.start()
-        assertTrue("晚到 0x4301 未在 10s 内经 onEndpointUpdate 回调", updateLatch.await(10, TimeUnit.SECONDS))
+        assertTrue("late 0x4301 not delivered via onEndpointUpdate within 10s", updateLatch.await(10, TimeUnit.SECONDS))
         val late = updates.get()
         assertNotNull(late)
         assertEquals("MockAP", late!!.ssid)
@@ -181,7 +181,7 @@ class Iap2SenderSessionTest {
                 deviceName = "test-device",
             ).run(timeoutMillis = 10_000L)
 
-        assertTrue("奥迪 3315 形态必须发 0x5702（跳过会让车机不开 AirPlay 服务）", accessory.sawWifiRequest)
+        assertTrue("Audi 3315 style must send 0x5702 (skipping it keeps the car's AirPlay service down)", accessory.sawWifiRequest)
         // 且必须采用 0x5703 给的凭据
         assertEquals("MockAP", endpoint.ssid)
         assertEquals("secret-passphrase", endpoint.passphrase)
@@ -217,7 +217,7 @@ class Iap2SenderSessionTest {
                 deviceName = "test-device",
             ).run(timeoutMillis = 10_000L)
 
-        assertTrue("宝马 iD9 形态不应发 0x5702（AP 信息由 0x4301 自带）", !accessory.sawWifiRequest)
+        assertTrue("BMW iD9 style must not send 0x5702 (AP info comes with 0x4301)", !accessory.sawWifiRequest)
         // AP 信息来自 0x4301 的无线组
         assertEquals("MockAP", endpoint.ssid)
         assertEquals(49152, endpoint.airPlayPort)
@@ -236,7 +236,7 @@ class Iap2SenderSessionTest {
     @Test
     fun knownCarSsidAvoidsCredentiallessAbort() {
         val endpoint = credentiallessEndpoint("Audi_MMI_3315_5GHz")
-        assertNotNull("已知热点时必须合成兜底端点，而不是拆链", endpoint)
+        assertNotNull("with a known hotspot a fallback endpoint must be synthesized instead of dropping the link", endpoint)
         assertEquals("Audi_MMI_3315_5GHz", endpoint!!.ssid)
         // 必须是「不自足端点」：主控据此才走「等 ctrl 邀请 → mDNS/网关」路径
         assertEquals(0, endpoint.airPlayPort)
@@ -279,8 +279,8 @@ class Iap2SenderSessionTest {
 
         // 每个地址都必须干净：没有 NUL、没有空白
         endpoint.ipAddresses.forEach { address ->
-            check(address.none { it == '\u0000' }) { "地址含 NUL：${address.toByteArray().toList()}" }
-            check(address.trim() == address) { "地址含首尾空白：'$address'" }
+            check(address.none { it == '\u0000' }) { "address contains NUL: ${address.toByteArray().toList()}" }
+            check(address.trim() == address) { "address has leading/trailing whitespace: '$address'" }
         }
         assertEquals(listOf("192.168.49.1", "fd00::1"), endpoint.ipAddresses)
         // 端口解析不受填充影响（同一帧里的 u32 参数）

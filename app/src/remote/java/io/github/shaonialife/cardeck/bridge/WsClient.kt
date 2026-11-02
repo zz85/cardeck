@@ -66,7 +66,7 @@ class WsClient(
         val host = hostPortPath.first.substringBefore(':')
         val port =
             hostPortPath.first.substringAfter(':', if (secure) "443" else "80").toIntOrNull()
-                ?: throw IOException("端口解析失败：$url")
+                ?: throw IOException("Failed to parse port: $url")
         val path = hostPortPath.second.ifBlank { "/" }
 
         // 指定了网络时，DNS 也必须走该网络——系统默认 DNS 会落在车机热点上，解析公网域名失败
@@ -113,9 +113,9 @@ class WsClient(
         out.write(handshake.toByteArray(Charsets.US_ASCII))
         out.flush()
 
-        val head = readUntilHeaderEnd(input) ?: throw IOException("握手应答不完整")
+        val head = readUntilHeaderEnd(input) ?: throw IOException("Incomplete handshake response")
         if (!head.startsWith("HTTP/1.1 101") && !head.startsWith("HTTP/1.0 101")) {
-            throw IOException("握手被拒：${head.lineSequence().first()}")
+            throw IOException("Handshake rejected: ${head.lineSequence().first()}")
         }
         alive = true
         listener.onOpen()
@@ -198,12 +198,12 @@ class WsClient(
                                 .drop(2)
                                 .toByteArray()
                                 .toString(Charsets.UTF_8)
-                        listener.onClosed("对端关闭：$reason")
+                        listener.onClosed("Closed by peer: $reason")
                         return
                     }
                 }
             }
-            listener.onClosed("读循环结束")
+            listener.onClosed("Read loop ended")
         } catch (error: IOException) {
             listener.onClosed("IO：${error.message}")
         } finally {
@@ -250,7 +250,7 @@ class WsClient(
         var offset = 0
         while (offset < target.size) {
             val count = input.read(target, offset, target.size - offset)
-            if (count < 0) throw IOException("连接中断（读载荷）")
+            if (count < 0) throw IOException("Connection lost (reading payload)")
             offset += count
         }
     }

@@ -26,7 +26,7 @@ class ReceiverProfileTest {
                 ReceiverProfile.Signals(features = features, srcvers = "210.81"),
             )
         assertEquals(ReceiverProfile.Era.PRE_HOMEKIT, p.era)
-        assertTrue(p.reasons.any { it.contains("无 bit38") })
+        assertTrue(p.reasons.any { it.contains("lacks bit38") })
     }
 
     @Test
@@ -71,7 +71,7 @@ class ReceiverProfileTest {
                 ),
             )
         assertEquals(ReceiverProfile.WifiGen.NEW, p.wifiGen)
-        assertTrue(p.reasons.any { it.contains("0x4301 提供") })
+        assertTrue(p.reasons.any { it.contains("provided by 0x4301") })
     }
 
     @Test

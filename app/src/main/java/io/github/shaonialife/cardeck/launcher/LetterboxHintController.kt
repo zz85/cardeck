@@ -159,7 +159,7 @@ object LetterboxHintController {
             if (!should) {
                 if (isVisible()) {
                     VirtualLauncher.logSink?.invoke(
-                        "HINT: 清除提示（$reason）——" +
+                        "HINT: clearing hint ($reason) - " +
                             "letterbox=${activity.letterboxed} reason=${activity.letterboxReason}",
                     )
                     clear()
@@ -182,8 +182,8 @@ object LetterboxHintController {
                         AppOrientationCompat.WriteResult.OK
                 systemOn = healed || AppOrientationCompat.isSystemEnabledFor(activity.packageName)
                 VirtualLauncher.logSink?.invoke(
-                    "HINT: 「${activity.packageName}」系统侧横屏覆盖缺失——补写" +
-                        "${if (healed) "成功" else "失败"}",
+                    "HINT: ${activity.packageName} system-side landscape override missing - rewrite " +
+                        "${if (healed) "succeeded" else "failed"}",
                 )
                 if (systemOn) {
                     // 补写已杀掉进程：等它退出后在原屏重启（与按钮动作等价，但自动完成）
@@ -194,7 +194,7 @@ object LetterboxHintController {
                             timeoutMs = 8_000,
                         )
                     VirtualLauncher.logSink?.invoke(
-                        "HINT: 补写后重启 「${activity.packageName}」ok=" +
+                        "HINT: relaunch after rewrite ${activity.packageName} ok=" +
                             (start.ok && start.output.contains("Starting:", ignoreCase = true)),
                     )
                     healedAndRelaunched = true
@@ -213,7 +213,7 @@ object LetterboxHintController {
                     ) {
                         if (isVisible()) clear()
                         VirtualLauncher.logSink?.invoke(
-                            "HINT: 补写覆盖并重启后「${activity.packageName}」已横屏",
+                            "HINT: ${activity.packageName} is landscape after override rewrite + relaunch",
                         )
                         return
                     }
@@ -221,8 +221,8 @@ object LetterboxHintController {
             }
             if (!systemOn) {
                 VirtualLauncher.logSink?.invoke(
-                    "HINT: 「${activity.packageName}」letterbox，但本机不支持横屏覆盖——" +
-                        "不提示重启（changeIds=$changeIds）",
+                    "HINT: ${activity.packageName} letterboxed, but this device doesn't support landscape override - " +
+                        "no restart hint (changeIds=$changeIds)",
                 )
                 if (isVisible()) clear()
                 return
@@ -241,11 +241,11 @@ object LetterboxHintController {
             }
             if (!wasVisible) {
                 VirtualLauncher.logSink?.invoke(
-                    "HINT: 「${current.packageName}」横屏未生效（$reason）" +
-                        " 内窗=${current.inner.width}x${current.inner.height}" +
-                        " 外框=${current.full.width}x${current.full.height}" +
-                        " 黑边 左=${current.inner.left - current.full.left}" +
-                        "/右=${current.full.right - current.inner.right}",
+                    "HINT: ${current.packageName} landscape not applied ($reason)" +
+                        " inner=${current.inner.width}x${current.inner.height}" +
+                        " outer=${current.full.width}x${current.full.height}" +
+                        " bars L=${current.inner.left - current.full.left}" +
+                        "/R=${current.full.right - current.inner.right}",
                 )
             }
         } finally {
@@ -306,7 +306,7 @@ object LetterboxHintController {
         cardRight = left + bitmap.width
         cardBottom = top + bitmap.height
         VirtualLauncher.logSink?.invoke(
-            "HINT: 卡片 bitmap=${bitmap.width}x${bitmap.height} rect=" +
+            "HINT: card bitmap=${bitmap.width}x${bitmap.height} rect=" +
                 "(${cardLeft.toInt()},${cardTop.toInt()}-${cardRight.toInt()},${cardBottom.toInt()})" +
                 " bar=$barWidth density=$density widthPx=$width",
         )
@@ -330,7 +330,7 @@ object LetterboxHintController {
     private fun restart(t: Target) {
         state = State.BUSY
         reRenderBusy()
-        VirtualLauncher.logSink?.invoke("HINT: 强制重启 ${t.packageName}（display=${t.displayId}）")
+        VirtualLauncher.logSink?.invoke("HINT: force restart ${t.packageName} (display=${t.displayId})")
         Bg.run("letterbox-restart") {
             runCatching {
                 AppOrientationCompat.awaitPending()
@@ -346,7 +346,7 @@ object LetterboxHintController {
                     )
                 if (!start.ok) {
                     VirtualLauncher.logSink?.invoke(
-                        "HINT: 重启 ${t.packageName} 失败 exit=${start.exitCode} out=${start.output.take(120)}",
+                        "HINT: restart ${t.packageName} failed exit=${start.exitCode} out=${start.output.take(120)}",
                     )
                 }
                 // 等应用重建窗口后再复探
@@ -370,15 +370,15 @@ object LetterboxHintController {
                         clear()
                     }
                     VirtualLauncher.logSink?.invoke(
-                        "HINT: 重启后「${t.packageName}」仍然 letterbox（reason=${activity.letterboxReason}）",
+                        "HINT: ${t.packageName} still letterboxed after restart (reason=${activity.letterboxReason})",
                     )
                 } else {
                     clear()
-                    VirtualLauncher.logSink?.invoke("HINT: 重启后「${t.packageName}」已横屏")
+                    VirtualLauncher.logSink?.invoke("HINT: ${t.packageName} is landscape after restart")
                 }
             }.onFailure {
                 state = State.NORMAL
-                VirtualLauncher.logSink?.invoke("HINT: 重启异常 ${it.message}")
+                VirtualLauncher.logSink?.invoke("HINT: restart error ${it.message}")
             }
         }
     }

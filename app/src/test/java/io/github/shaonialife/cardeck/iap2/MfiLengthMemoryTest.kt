@@ -77,19 +77,19 @@ class MfiLengthMemoryTest {
         // 矛盾态（成功 ∧ 被拒）下 20B 不得再排第一——降级参与正常排序
         val entry = MfiLengthMemory.Entry(succeeded = 20, rejected = setOf(20))
         val order = MfiLengthMemory.orderAttempts(baselineCar, entry)
-        assertEquals("被硬拒绝的档位不得再排第一", 32, order.first())
-        assertTrue("矛盾档位仍在候选内（固件可能变）", 20 in order)
+        assertEquals("a hard-rejected length must not be ranked first again", 32, order.first())
+        assertTrue("conflicting length stays among candidates (firmware may change)", 20 in order)
     }
 
     @Test
     fun describeShowsWhatWasRemembered() {
-        assertEquals("无", MfiLengthMemory.describe(MfiLengthMemory.Entry()))
+        assertEquals("none", MfiLengthMemory.describe(MfiLengthMemory.Entry()))
         val text =
             MfiLengthMemory.describe(
                 MfiLengthMemory.Entry(succeeded = 32, silent = setOf(20), rejected = setOf(16)),
             )
-        assertTrue(text.contains("成功=32B"))
-        assertTrue(text.contains("静默=20B"))
-        assertTrue(text.contains("被拒=16B"))
+        assertTrue(text.contains("ok=32B"))
+        assertTrue(text.contains("silent=20B"))
+        assertTrue(text.contains("rejected=16B"))
     }
 }

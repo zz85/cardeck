@@ -27,14 +27,14 @@ class AirPlayPairingTest {
         assertNotNull(receiverIdentity)
         assertEquals(receiver.pairingId, receiverIdentity!!.pairingId)
         assertArrayEquals(receiver.staticKey.publicKey, receiverIdentity.publicKey)
-        assertTrue("接收端应保存控制器公钥", receiver.pairings.containsKey(identity.pairingId))
+        assertTrue("receiver should store the controller public key", receiver.pairings.containsKey(identity.pairingId))
 
         val keys = PairVerifyClient(identity, transport) { }.run(receiver.staticKey.publicKey)
         assertEquals(32, keys.phoneWriteKey.size)
         assertEquals(32, keys.phoneReadKey.size)
 
         // 方向交叉验证：接收端 readKey 解我们发出的方向，writeKey 是它发给我们的方向
-        assertNotNull("接收端应完成 pair-verify", receiver.lastReadKey)
+        assertNotNull("receiver should complete pair-verify", receiver.lastReadKey)
         assertArrayEquals(receiver.lastReadKey, keys.phoneWriteKey)
         assertArrayEquals(receiver.lastWriteKey, keys.phoneReadKey)
     }

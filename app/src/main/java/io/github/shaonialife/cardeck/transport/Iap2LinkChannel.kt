@@ -38,12 +38,12 @@ class Iap2LinkChannel(
     init {
         engine.onPeerSynchronizationAdopted = { sync ->
             log(
-                "LINK: 采纳对端会话表 maxOutgoing=${sync.maxOutgoing} maxLen=${sync.maxLength} " +
+                "LINK: adopted peer session table maxOutgoing=${sync.maxOutgoing} maxLen=${sync.maxLength} " +
                     "sessions=" + sync.sessions.joinToString { "${it.id}/k${it.kind}/v${it.version}" },
             )
         }
         engine.onUnknownSessionData = { sessionId, size ->
-            log("LINK: 丢弃未知会话 $sessionId 的数据帧（$size 字节）")
+            log("LINK: dropped data frame for unknown session $sessionId ($size bytes)")
         }
         engine.onFrameReceived = { control, sequence, ack, sessionId, size ->
             // 真车调试关键观测：车机在识别阶段是否回帧、回什么（静默分歧全靠它定位）

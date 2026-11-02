@@ -44,7 +44,7 @@ class CarFixture(
                 .sortedBy { it.name }
                 .mapNotNull { file ->
                     runCatching { parse(file) }.getOrElse {
-                        println("REPLAY: fixture 解析失败 ${file.name}: $it")
+                        println("REPLAY: fixture parse failed ${file.name}: $it")
                         null
                     }
                 }

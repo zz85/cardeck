@@ -228,7 +228,7 @@ class DockActivity : AppCompatActivity() {
                 )
                 runOnUiThread { view.setImageBitmap(bitmap) }
             } else {
-                VirtualLauncher.logSink?.invoke("WALLPAPER-DOCK: 解码失败")
+                VirtualLauncher.logSink?.invoke("WALLPAPER-DOCK: decode failed")
             }
         }
     }

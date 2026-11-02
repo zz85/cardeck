@@ -24,7 +24,7 @@ open class SenderApp : Application() {
         DebugFileLog.markSessionStart(this)
         val previous = Thread.getDefaultUncaughtExceptionHandler()
         Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
-            Log.e(TAG, "未捕获异常（线程 ${thread.name}，已吞掉保进程）", throwable)
+            Log.e(TAG, "Uncaught exception (thread ${thread.name}, swallowed to keep process alive)", throwable)
             // 不调用 previous：默认处理器会 killProcess 杀死整个 app
         }
         // 应用安装/卸载/更新 → 桌面与车机设置的共享应用清单缓存失效
@@ -43,7 +43,7 @@ open class SenderApp : Application() {
                 ) {
                     VirtualLauncher
                         .invalidateAppsCache()
-                    Log.i(TAG, "应用清单缓存已失效（包变化）")
+                    Log.i(TAG, "App list cache invalidated (package changed)")
                 }
             },
             packageFilter,

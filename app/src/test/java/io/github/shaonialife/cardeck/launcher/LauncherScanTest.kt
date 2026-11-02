@@ -40,7 +40,7 @@ class LauncherScanTest {
         // 旧实现的 take(200) 会在这里丢掉 50 个——这正是「部分 app 扫不出来」的根因
         val many = (1..250).map { "com.example.app$it" }
         val result = dedupeLauncherPackages(many, selfPackage = "io.github.shaonialife.cardeck")
-        assertEquals("不得截断应用列表（旧实现 take(200) 丢尾部）", 250, result.size)
+        assertEquals("App list must not be truncated (old take(200) dropped the tail)", 250, result.size)
         assertEquals("com.example.app250", result.last())
     }
 

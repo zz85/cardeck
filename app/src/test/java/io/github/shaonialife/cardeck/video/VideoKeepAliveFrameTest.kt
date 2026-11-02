@@ -94,7 +94,7 @@ class VideoKeepAliveFrameTest {
 
         // params[0]（偏移 8..16）是 PTS 槽位，config 必须留 0
         for (index in 8 until 16) {
-            assertEquals("params[0] 应为 0（偏移 $index）", 0, header[index].toInt())
+            assertEquals("params[0] should be 0 (offset $index)", 0, header[index].toInt())
         }
 
         // params[1]（偏移 16..24）= width f32 LE、height f32 LE

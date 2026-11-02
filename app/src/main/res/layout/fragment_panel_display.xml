@@ -21,14 +21,14 @@
             android:layout_height="wrap_content"
             android:layout_marginTop="6dp"
             android:layout_marginBottom="11dp"
-            android:text="视频流按车机分辨率的百分比生成虚拟屏与编码画面（逻辑布局不变）。分辨率改动下次连接起效；帧率为推流刷新频率，切换实时生效。"
+            android:text="The virtual display and encoded video are sized as a percentage of the car resolution (logical layout unchanged). Resolution changes apply on next connection; frame rate is the stream refresh rate and applies immediately."
             android:textColor="#FF8E8E93"
             android:textSize="12sp" />
 
         <TextView
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="连接时真息屏"
+            android:text="Screen off when connected"
             android:textColor="#FFF5F5F7"
             android:textSize="14sp" />
 
@@ -49,7 +49,7 @@
                 android:paddingTop="6dp"
                 android:paddingRight="18dp"
                 android:paddingBottom="6dp"
-                android:text="开"
+                android:text="On"
                 android:textColor="#FFFFFFFF"
                 android:textSize="13sp"
                 android:textStyle="bold" />
@@ -63,7 +63,7 @@
                 android:paddingTop="6dp"
                 android:paddingRight="18dp"
                 android:paddingBottom="6dp"
-                android:text="关"
+                android:text="Off"
                 android:textColor="#FF8E8E93"
                 android:textSize="13sp"
                 android:textStyle="bold" />
@@ -74,7 +74,7 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="6dp"
-            android:text="连接成功后物理断电手机面板（系统保持唤醒、虚拟屏照常渲染）；关闭则只用暗幕。按电源键两次可恢复屏幕。"
+            android:text="Powers off the phone panel once connected (system stays awake, virtual displays keep rendering); when off, only the dimmer is used. Press the power button twice to restore the screen."
             android:textColor="#FF8E8E93"
             android:textSize="12sp" />
 
@@ -82,7 +82,7 @@
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_marginTop="16dp"
-            android:text="上车自动连接"
+            android:text="Auto-connect in car"
             android:textColor="#FFF5F5F7"
             android:textSize="14sp" />
 
@@ -103,7 +103,7 @@
                 android:paddingTop="6dp"
                 android:paddingRight="18dp"
                 android:paddingBottom="6dp"
-                android:text="开"
+                android:text="On"
                 android:textColor="#FFFFFFFF"
                 android:textSize="13sp"
                 android:textStyle="bold" />
@@ -117,7 +117,7 @@
                 android:paddingTop="6dp"
                 android:paddingRight="18dp"
                 android:paddingBottom="6dp"
-                android:text="关"
+                android:text="Off"
                 android:textColor="#FF8E8E93"
                 android:textSize="13sp"
                 android:textStyle="bold" />
@@ -128,7 +128,7 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="6dp"
-            android:text="车机蓝牙连上时自动拉起会话（需 Shizuku 已启动）。需要「显示在其他应用上层」权限才能在后台启动；该权限缺失时会自动补授。"
+            android:text="Starts a session automatically when the car Bluetooth connects (Shizuku must be running). Background start needs the \&quot;Display over other apps\&quot; permission; it is granted automatically if missing."
             android:textColor="#FF8E8E93"
             android:textSize="12sp" />
 
@@ -136,7 +136,7 @@
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_marginTop="16dp"
-            android:text="HID 原始日志"
+            android:text="HID raw log"
             android:textColor="#FFF5F5F7"
             android:textSize="14sp" />
 
@@ -157,7 +157,7 @@
                 android:paddingTop="6dp"
                 android:paddingRight="18dp"
                 android:paddingBottom="6dp"
-                android:text="开"
+                android:text="On"
                 android:textColor="#FFFFFFFF"
                 android:textSize="13sp"
                 android:textStyle="bold" />
@@ -171,7 +171,7 @@
                 android:paddingTop="6dp"
                 android:paddingRight="18dp"
                 android:paddingBottom="6dp"
-                android:text="关"
+                android:text="Off"
                 android:textColor="#FF8E8E93"
                 android:textSize="13sp"
                 android:textStyle="bold" />
@@ -182,7 +182,7 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="6dp"
-            android:text="键位校准用：打开后每帧 HID 报文写一行 HID-RAW（uuid + hex 字节），对照按下方向盘/旋钮时打印的字节调整键位映射。平时请关闭，避免日志刷屏。"
+            android:text="For key calibration: when on, every HID report logs a HID-RAW line (uuid + hex bytes); compare the bytes printed when pressing steering wheel/knob buttons to adjust the key mapping. Keep it off normally to avoid log spam."
             android:textColor="#FF8E8E93"
             android:textSize="12sp" />
 
@@ -190,7 +190,7 @@
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_marginTop="16dp"
-            android:text="流分辨率"
+            android:text="Stream resolution"
             android:textColor="#FFF5F5F7"
             android:textSize="14sp" />
 
@@ -223,7 +223,7 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="4dp"
-            android:text="保存后下次连接起效"
+            android:text="Applies on next connection after saving"
             android:textColor="#FF8E8E93"
             android:textSize="12sp" />
 
@@ -231,7 +231,7 @@
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_marginTop="16dp"
-            android:text="目标帧率"
+            android:text="Target frame rate"
             android:textColor="#FFF5F5F7"
             android:textSize="14sp" />
 
@@ -276,7 +276,7 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="6dp"
-            android:text="连接中切换实时生效；英雄卡实时显示「实际/目标」帧率"
+            android:text="Changes apply live while connected; the status card shows \&quot;actual/target\&quot; fps"
             android:textColor="#FF8E8E93"
             android:textSize="12sp" />
 
@@ -284,7 +284,7 @@
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_marginTop="16dp"
-            android:text="触摸注入节流"
+            android:text="Touch injection throttle"
             android:textColor="#FFF5F5F7"
             android:textSize="14sp" />
 
@@ -316,7 +316,7 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="4dp"
-            android:text="交互滞后但帧率正常（事件派发堆积）时调高试验；拖动即时生效"
+            android:text="Try raising it if touch lags while fps is normal (events piling up); applies while dragging"
             android:textColor="#FF8E8E93"
             android:textSize="12sp" />
     </LinearLayout>

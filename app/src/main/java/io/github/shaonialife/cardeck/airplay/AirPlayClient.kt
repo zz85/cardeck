@@ -152,7 +152,7 @@ class AirPlayClient(
      */
     fun skipPairing(reason: String) {
         pairingUnsupported = true
-        log("AIRPLAY: 跳过 HomeKit 配对（$reason）——使用 et=NONE 明文会话 + AES-CTR 屏幕流")
+        log("AIRPLAY: skipping HomeKit pairing ($reason) - using et=NONE plaintext session + AES-CTR screen stream")
     }
 
     /** 重新建立控制通道（配对失败/跳过配对后，SETUP 之前必须有一次新连接）。 */
@@ -166,7 +166,7 @@ class AirPlayClient(
     fun retryWithPairing(windowMillis: Long = 30_000): PairVerifyClient.ControlKeys? {
         pairingUnsupported = false
         close()
-        log("AIRPLAY: 明文 SETUP 未通过——尝试加密升级（补做 HomeKit 配对）")
+        log("AIRPLAY: plaintext SETUP rejected - trying encrypted upgrade (doing HomeKit pairing)")
         return runPairing(windowMillis)
     }
 
@@ -213,10 +213,10 @@ class AirPlayClient(
         endpoint = newEndpoint
         endpointGeneration++
         log(
-            "AIRPLAY: 端点更新（$reason）" +
+            "AIRPLAY: endpoint update ($reason) " +
                 "${old.ipAddresses.firstOrNull()}:${old.airPlayPort} → " +
                 "${newEndpoint.ipAddresses.firstOrNull()}:${newEndpoint.airPlayPort}" +
-                "（配对循环下一轮使用新地址）",
+                " (next pairing round uses the new address)",
         )
         close()
         return true
@@ -233,7 +233,7 @@ class AirPlayClient(
 
     private fun runPairingLoop(windowMillis: Long): PairVerifyClient.ControlKeys? {
         val identity = loadOrCreateIdentity()
-        log("AIRPLAY: 控制器身份 pairingId=${identity.pairingId}")
+        log("AIRPLAY: controller identity pairingId=${identity.pairingId}")
         // 车机 AirPlay 窗口是「用户点车机上的手机图标 / 收到 ctrl 邀请后才开」的
         // （Audi 实测：端口从 Connection refused 变为开放）。因此重试采用时限制：
         // 默认 120s 内每 2s 试一次——用户在车机上点一下的等待不会被提前放弃。
@@ -244,7 +244,7 @@ class AirPlayClient(
             // 每轮重试前吸收一次 mDNS 新结果：网关兜底地址连不通时，车机的
             // _airplay._tcp 可能已经在后台发现到，及时换过去比空转 120s 强。
             endpointRefresher?.invoke(endpoint)?.let { refreshed ->
-                updateEndpoint(refreshed, "配对期间 mDNS 刷新")
+                updateEndpoint(refreshed, "mDNS refresh during pairing")
             }
             // 低频钩子：主控据此重新公告 ctrl mDNS（车机 Bonjour 可能漏掉首次公告）
             if (attempt == 1 || attempt % RETRY_TICK_ATTEMPTS == 0) {
@@ -253,7 +253,7 @@ class AirPlayClient(
             close()
             if (!ensureConnected(2_000)) {
                 if (attempt == 1 || attempt % 5 == 0) {
-                    log("AIRPLAY: 车机 AirPlay 端口未开（等待你点车机上的手机图标 / 车机发 ctrl 邀请）…第 $attempt 次重试")
+                    log("AIRPLAY: head unit AirPlay port closed (tap the phone icon on the car / wait for ctrl invite)... retry $attempt")
                 }
                 Thread.sleep(2_000)
                 continue
@@ -276,9 +276,9 @@ class AirPlayClient(
                         log(
                             "AIRPLAY: pair-setup " +
                                 when {
-                                    forbidden -> "被 403 拒绝（车机不接受匿名配对——iAP2 已完成信任）→ 转已配对快路径"
-                                    unsupported -> "不被支持（$message）——该接收端是 pre-HomeKit 老车机，转明文会话"
-                                    else -> "失败（$message）"
+                                    forbidden -> "403 (head unit refuses anonymous pairing - iAP2 already trusted) → paired fast path"
+                                    unsupported -> "unsupported ($message) - pre-HomeKit receiver, switching to plaintext session"
+                                    else -> "failed ($message)"
                                 },
                         )
                         if (unsupported) {
@@ -296,24 +296,24 @@ class AirPlayClient(
                     val receiverStaticKey = endpoint.publicKey?.let(::hexToBytes)
                     val keys = PairVerifyClient(identity, fastPathTransport, log).run(receiverStaticKey)
                     cipher = ControlCipher(keys.phoneReadKey, keys.phoneWriteKey)
-                    log("AIRPLAY: 控制通道加密已启用（已配对快路径）")
+                    log("AIRPLAY: control channel encryption enabled (paired fast path)")
                     return keys
                 }
                 val receiverStaticKey = endpoint.publicKey?.let(::hexToBytes)
                 val keys = PairVerifyClient(identity, transport, log).run(receiverStaticKey)
                 // pair-verify 之后双方立即启用加密（接收端在 M4 应答后开启）
                 cipher = ControlCipher(keys.phoneReadKey, keys.phoneWriteKey)
-                log("AIRPLAY: 控制通道加密已启用")
+                log("AIRPLAY: control channel encryption enabled")
                 return keys
             } catch (error: IOException) {
                 val message = error.message.orEmpty()
                 // verify/认证段的 403 与 pair-setup 403 同源（车机信任已建立），
                 // 见 pairingForbidden 注释：标记后主控不再断 BT / 不降级明文
                 if (message.contains("403")) pairingForbidden = true
-                log("AIRPLAY: 配对第 $attempt 次尝试失败 - $message")
+                log("AIRPLAY: pairing attempt $attempt failed - $message")
                 if (PAIRING_UNSUPPORTED_STATUS.any { message.contains(it) }) {
                     pairingUnsupported = true
-                    log("AIRPLAY: 接收端不提供 HomeKit 配对通道——停止重试，转明文会话（et=NONE）")
+                    log("AIRPLAY: receiver has no HomeKit pairing - stop retrying, switching to plaintext session (et=NONE)")
                     close()
                     return null
                 }
@@ -323,7 +323,7 @@ class AirPlayClient(
                 Thread.sleep(pairingRetryBackoffMs(message))
             }
         }
-        log("AIRPLAY: 配对最终失败（接收端 RTSP 无应答）")
+        log("AIRPLAY: pairing failed for good (no RTSP reply from receiver)")
         return null
     }
 
@@ -332,7 +332,7 @@ class AirPlayClient(
         if (!ensureConnected()) return null
         return try {
             val (statusLine, body) = requestInfo(timeoutMillis)
-            log("AIRPLAY: ✓ /info [$statusLine] body=${body.size} 字节")
+            log("AIRPLAY: ✓ /info [$statusLine] body=${body.size} bytes")
             if (body.isEmpty()) return null
             val root = BinaryPlist.parse(body)
             if (root is Map<*, *>) {
@@ -342,7 +342,7 @@ class AirPlayClient(
                 null
             }
         } catch (error: IOException) {
-            log("AIRPLAY: /info 失败 - ${error.message}")
+            log("AIRPLAY: /info failed - ${error.message}")
             null
         }
     }
@@ -376,13 +376,13 @@ class AirPlayClient(
                     udp.send(java.net.DatagramPacket(payload, payload.size, address, port))
                     sent++
                     if (sent <= 3 || sent % 60 == 0) {
-                        log("AIRPLAY: keepAlive ping #$sent → $host:$port（间隔 ${gap}ms）")
+                        log("AIRPLAY: keepAlive ping #$sent → $host:$port (interval ${gap}ms)")
                     }
                     Thread.sleep(KEEPALIVE_INTERVAL_MS)
                 }
             } catch (_: InterruptedException) {
             } catch (error: IOException) {
-                log("AIRPLAY: keepAlive 结束 - ${error.message}")
+                log("AIRPLAY: keepAlive ended - ${error.message}")
             } finally {
                 udp?.close()
             }
@@ -435,12 +435,12 @@ class AirPlayClient(
         val root =
             runCatching { BinaryPlist.parse(body) as? Map<*, *> }.getOrNull()
         if (root == null) {
-            log("AIRPLAY: feedback body 解析失败（${body.size}B）hex=${body.joinToString("") { "%02x".format(it) }}")
+            log("AIRPLAY: feedback body parse failed (${body.size}B) hex=${body.joinToString("") { "%02x".format(it) }}")
             return
         }
         val streams = root["streams"] as? List<*>
         if (streams == null) {
-            log("AIRPLAY: feedback 无 streams 键（keys=${root.keys}）全字段=$root")
+            log("AIRPLAY: feedback has no streams key (keys=${root.keys}) all fields=$root")
             return
         }
         streams.forEachIndexed { index, entry ->
@@ -448,7 +448,7 @@ class AirPlayClient(
             log(
                 "AIRPLAY: feedback.stream[$index] type=${stream["type"]} sr=${stream["sr"]} " +
                     "connId=${stream["streamConnectionID"]} sampleTime=${stream["sampleTime"]} " +
-                    "ts=${stream["timestamp"]} tsRawNs=${stream["timestampRawNs"]} 全字段=$stream",
+                    "ts=${stream["timestamp"]} tsRawNs=${stream["timestampRawNs"]} all fields=$stream",
             )
         }
     }
@@ -469,7 +469,7 @@ class AirPlayClient(
             readerThread = null
             readerGeneration++
         }
-        failAllPending("控制通道关闭")
+        failAllPending("control channel closed")
         runCatching { iapTunnel?.socket?.close() }
         iapTunnel = null
         iapLink = null
@@ -500,7 +500,7 @@ class AirPlayClient(
                         ),
                 ),
             )
-        log("AIRPLAY: hidSetInputMode(事件通道) uuid=$deviceUuidHex mode=$mode ok=$sent")
+        log("AIRPLAY: hidSetInputMode(event channel) uuid=$deviceUuidHex mode=$mode ok=$sent")
         return sent
     }
 
@@ -573,7 +573,7 @@ class AirPlayClient(
             }
             true
         } catch (error: IOException) {
-            log("EVENT: 命令发送失败 - ${error.message}")
+            log("EVENT: command send failed - ${error.message}")
             false
         }
     }
@@ -633,10 +633,10 @@ class AirPlayClient(
                     body,
                     contentType = "application/x-apple-binary-plist",
                 )
-            log("AIRPLAY: modesChanged（声明持有主屏/主音频资源）[$statusLine]")
+            log("AIRPLAY: modesChanged (claiming main screen/main audio) [$statusLine]")
             statusLine.contains("200")
         } catch (error: IOException) {
-            log("AIRPLAY: modesChanged 失败 - ${error.message}")
+            log("AIRPLAY: modesChanged failed - ${error.message}")
             false
         }
     }
@@ -654,13 +654,13 @@ class AirPlayClient(
         // 计时端口：catplay 真车实现始终绑定真实 UDP timing server 通告给车机
         // （媒体时钟同步源）；timingPort=0 曾是我们的屏幕流 400 头号嫌疑。
         if (!timingServer.start()) {
-            log("AIRPLAY: 计时服务未启动（继续，但媒体时钟无法同步）")
+            log("AIRPLAY: timing server not started (continuing, but media clock cannot sync)")
         }
         val deviceId = setupDeviceId()
         val body = buildSessionSetupBody(deviceId, timingServer.port, encrypted = cipher != null)
         log(
-            "AIRPLAY: 初始 SETUP body=${body.size}B timingPort=${timingServer.port} " +
-                "deviceID=$deviceId 加密=${if (cipher != null) "是" else "否（et=NONE）"}",
+            "AIRPLAY: initial SETUP body=${body.size}B timingPort=${timingServer.port} " +
+                "deviceID=$deviceId encrypted=${if (cipher != null) "yes" else "no (et=NONE)"}",
         )
         val (statusLine, responseBody) =
             try {
@@ -673,20 +673,20 @@ class AirPlayClient(
                     contentType = "application/x-apple-binary-plist",
                 )
             } catch (error: IOException) {
-                log("AIRPLAY: SETUP 失败 - ${error.message}")
+                log("AIRPLAY: SETUP failed - ${error.message}")
                 return null
             }
         if (!statusLine.contains("200")) {
-            log("AIRPLAY: SETUP 应答 [$statusLine]（自报 deviceID=$deviceId）")
+            log("AIRPLAY: SETUP reply [$statusLine] (our deviceID=$deviceId)")
             if (statusLine.contains("403")) {
                 // 403 的两类成因按可能性排序：设备过滤（WinPlay 等「只接受指定
                 // iPhone」）最常见，其次是接收端不接受的配对/信任状态。把本机
                 // 蓝牙地址直接打出来，用户对照接收端设置即可自查。
                 log(
-                    "AIRPLAY: 403 排查——接收端若启用了设备过滤，请在接收端选择本机蓝牙地址 " +
+                    "AIRPLAY: 403 hint - if the receiver filters devices, select this phone Bluetooth address there: " +
                         "$deviceId" +
                         if (deviceId == DeviceIdentity.PLACEHOLDER_MAC) {
-                            "（当前是占位值：未能解析真实蓝牙 MAC，Shizuku 是否就绪？）"
+                            " (placeholder: real Bluetooth MAC not resolved, is Shizuku ready?)"
                         } else {
                             ""
                         },
@@ -698,11 +698,11 @@ class AirPlayClient(
             try {
                 BinaryPlist.parse(responseBody)
             } catch (error: IllegalArgumentException) {
-                log("AIRPLAY: SETUP 应答 plist 解析失败（${responseBody.size} 字节）")
+                log("AIRPLAY: SETUP reply plist parse failed (${responseBody.size} bytes)")
                 null
             } as? Map<*, *>
         if (root == null) {
-            log("AIRPLAY: SETUP 应答不是字典")
+            log("AIRPLAY: SETUP reply is not a dictionary")
             return null
         }
         // 拉取主显示屏参数（跟随接收端屏幕方向；横屏车机应推横屏画面，触摸坐标也按此对齐）
@@ -715,8 +715,8 @@ class AirPlayClient(
         val display = (infoMap?.get("displays") as? List<*>)?.firstOrNull() as? Map<*, *>
         if (display == null) {
             log(
-                "AIRPLAY: 未取得 /info displays → 显示屏参数退回手机分辨率兜底" +
-                    "（车机侧可能是小画面/黑边）；HID 设备为空 → 车机不会发 hidSendReport（触摸不可用）",
+                "AIRPLAY: no /info displays → display params fall back to phone resolution" +
+                    " (head unit may show small picture/black bars); no HID devices → no hidSendReport (touch unavailable)",
             )
         }
         // /info 全量转储：找奥迪私有的数据流 UUID（type-130 的 clientTypeUUID 候选）、
@@ -729,9 +729,9 @@ class AirPlayClient(
             val skipped = setOf("displays")
             val summary =
                 root.entries.joinToString("; ") { (key, value) ->
-                    if (key in skipped) "$key=[${(value as? List<*>)?.size ?: "?"}项]" else "$key=${value.toString().take(200)}"
+                    if (key in skipped) "$key=[${(value as? List<*>)?.size ?: "?"} items]" else "$key=${value.toString().take(200)}"
                 }
-            log("AIRPLAY: /info 字段: $summary")
+            log("AIRPLAY: /info fields: $summary")
             // displays 已在 logInfoSummary 里逐条打印（含键值明细），此处不再重复
             // 音频能力逐条打印（整行 /info 被 take(200) 截断，audioFormats 恰好断在中间）：
             // 决定 audioType 只能靠这里——奥迪 type=100 到底声明了 compatibility 还是 media
@@ -742,10 +742,10 @@ class AirPlayClient(
                 log(
                     "AIRPLAY: audioFormat[$index] type=${format["type"]} audioType=${format["audioType"]} " +
                         "output=0x${output.toString(16)} input=0x${input.toString(16)}" +
-                        "（PCM44.1k/48k stereo=" +
+                        " (PCM44.1k/48k stereo=" +
                         "${if ((output and (1L shl 11)) != 0L) "✓" else "✗"}" +
-                        "${if ((output and (1L shl 15)) != 0L) "✓" else "✗"}，" +
-                        "AAC-LC 44.1k=${if ((output and (1L shl 22)) != 0L) "✓" else "✗"}）",
+                        "${if ((output and (1L shl 15)) != 0L) "✓" else "✗"}, " +
+                        "AAC-LC 44.1k=${if ((output and (1L shl 22)) != 0L) "✓" else "✗"})",
                 )
             }
             (root["audioLatencies"] as? List<*>)?.forEachIndexed { index, entry ->
@@ -781,7 +781,7 @@ class AirPlayClient(
                 }
             }
         }
-        log("AIRPLAY: hidDevices 解析结果 uuids=$parsedHidUuids")
+        log("AIRPLAY: hidDevices parsed uuids=$parsedHidUuids")
         val info =
             SetupInfo(
                 eventPort = portOf(root["eventPort"]),
@@ -805,8 +805,8 @@ class AirPlayClient(
                 keepAliveSendStatsAsBody = (infoRoot?.get("keepAliveSendStatsAsBody") as? Boolean) == true,
             )
         log(
-            "AIRPLAY: ✓ SETUP 完成 eventPort=${info.eventPort} timingPort=${info.timingPort} " +
-                "keepAlive=${info.keepAlivePort ?: "无"} features=${info.enabledFeatures} " +
+            "AIRPLAY: ✓ SETUP done eventPort=${info.eventPort} timingPort=${info.timingPort} " +
+                "keepAlive=${info.keepAlivePort ?: "none"} features=${info.enabledFeatures} " +
                 "display=${info.displayWidth}x${info.displayHeight}@${info.maxFps} " +
                 "displayUuid=${info.displayUuid}",
         )
@@ -822,25 +822,25 @@ class AirPlayClient(
      * 会话的 `/info`（能力查询），而活跃会话内的 `/info` 反而常被按 455/403 拒掉。
      */
     private fun loadInfoWithDiagnostics(): Map<*, *>? {
-        var statusLine = "未请求"
+        var statusLine = "not requested"
         var body = ByteArray(0)
         try {
             val first = requestInfo()
             statusLine = first.first
             body = first.second
             if (!statusLine.contains("200") || body.isEmpty()) {
-                log("AIRPLAY: /info 首次 [$statusLine] body=${body.size}B → 800ms 后重试一次")
+                log("AIRPLAY: /info first try [$statusLine] body=${body.size}B → retrying once in 800ms")
                 Thread.sleep(800)
                 ensureConnected(2_000)
                 val retry = requestInfo(5_000)
-                log("AIRPLAY: /info 重试 [${retry.first}] body=${retry.second.size}B")
+                log("AIRPLAY: /info retry [${retry.first}] body=${retry.second.size}B")
                 if (retry.first.contains("200") && retry.second.isNotEmpty()) {
                     statusLine = retry.first
                     body = retry.second
                 }
             }
         } catch (error: Exception) {
-            log("AIRPLAY: /info 请求异常 - ${error.javaClass.simpleName}: ${error.message}")
+            log("AIRPLAY: /info request error - ${error.javaClass.simpleName}: ${error.message}")
         }
         parseInfoBody(statusLine, body)?.let { return it }
         scheduleSideProbe()
@@ -872,10 +872,10 @@ class AirPlayClient(
                         }
                     }
                 if (uuids.isEmpty()) {
-                    log("AIRPLAY: 侧信道 /info 成功但车机未声明 HID 设备 → 触摸不走 AirPlay HID 通路")
+                    log("AIRPLAY: side-channel /info OK but no HID devices declared → touch will not use AirPlay HID")
                     return@Thread
                 }
-                log("AIRPLAY: 侧信道拿到 HID 设备 $uuids → 补发 hidSetInputMode（触摸可能立即生效）")
+                log("AIRPLAY: side channel got HID devices $uuids → resending hidSetInputMode (touch may work right away)")
                 uuids.forEach { uuid -> runCatching { sendHidSetInputMode(uuid, mode = 0) } }
             },
             "info-side-probe",
@@ -887,7 +887,7 @@ class AirPlayClient(
         statusLine: String,
         body: ByteArray,
     ): Map<*, *>? {
-        log("AIRPLAY: /info 应答 [$statusLine] body=${body.size}B")
+        log("AIRPLAY: /info reply [$statusLine] body=${body.size}B")
         if (body.isEmpty()) return null
         val info =
             try {
@@ -895,8 +895,8 @@ class AirPlayClient(
                 result.note?.let { log("AIRPLAY: /info $it") }
                 result.value as? Map<*, *>
             } catch (error: IllegalArgumentException) {
-                log("AIRPLAY: /info plist 解析失败 - ${error.message}")
-                log("AIRPLAY: /info 原始体（${body.size}B）hex=" + hexDump(body, 320))
+                log("AIRPLAY: /info plist parse failed - ${error.message}")
+                log("AIRPLAY: /info raw body (${body.size}B) hex=" + hexDump(body, 320))
                 null
             }
         if (info == null) return null
@@ -918,7 +918,7 @@ class AirPlayClient(
             activeHost ?: EndpointHosts.candidates(target.ipAddresses).firstOrNull() ?: return null
         var probe: Socket? = null
         return try {
-            log("AIRPLAY: /info 侧信道探测 → $host:${target.airPlayPort}（独立短连接，不碰会话）")
+            log("AIRPLAY: /info side-channel probe → $host:${target.airPlayPort} (separate short connection, session untouched)")
             probe =
                 Socket().apply {
                     connect(InetSocketAddress(resolveAddress(host), target.airPlayPort), timeoutMillis)
@@ -962,16 +962,16 @@ class AirPlayClient(
             val bytes = collected.toByteArray()
             val separator = indexOf(bytes, HEAD_SEPARATOR)
             if (separator < 0) {
-                log("AIRPLAY: /info 侧信道无有效应答（${bytes.size}B，车机可能只服务已绑定会话）")
+                log("AIRPLAY: /info side channel got no valid reply (${bytes.size}B, head unit may only serve bound sessions)")
                 return null
             }
             val headText = String(bytes, 0, separator, Charsets.ISO_8859_1)
             val (line, contentLength) = parseRtspHead(headText)
             val bodyStart = separator + HEAD_SEPARATOR.size
             val infoBody = bytes.copyOfRange(bodyStart, minOf(bodyStart + contentLength, bytes.size))
-            return parseInfoBody("侧信道 $line", infoBody)
+            return parseInfoBody("side channel $line", infoBody)
         } catch (error: Exception) {
-            log("AIRPLAY: /info 侧信道失败 - ${error.javaClass.simpleName}: ${error.message}")
+            log("AIRPLAY: /info side channel failed - ${error.javaClass.simpleName}: ${error.message}")
             null
         } finally {
             runCatching { probe?.close() }
@@ -1085,7 +1085,7 @@ class AirPlayClient(
             } catch (error: IOException) {
                 if (!writeFailureLogged) {
                     writeFailureLogged = true
-                    log("$logPrefix: 写出失败 - ${error.message}")
+                    log("$logPrefix: write failed - ${error.message}")
                 }
                 false
             }
@@ -1107,9 +1107,9 @@ class AirPlayClient(
                         plaintext += decrypted.first
                         plaintext = parsePackages(plaintext)
                     }
-                    log("$logPrefix: 通道关闭（EOF），共 $messageCount 条 iAP2 消息")
+                    log("$logPrefix: channel closed (EOF), $messageCount iAP2 messages total")
                 } catch (error: IOException) {
-                    log("$logPrefix: 读取结束 - ${error.message}")
+                    log("$logPrefix: read ended - ${error.message}")
                 }
             }, "iap-tunnel-reader").apply {
                 isDaemon = true
@@ -1190,7 +1190,7 @@ class AirPlayClient(
     fun runIapTunnel(sessionKey: ByteArray?): IapTunnelClient? {
         // 隧道 socket 用 DataStream 密钥加密，未配对会话没有共享密钥可派生 → 跳过。
         if (sessionKey == null) {
-            log("TUNNEL: 未配对会话没有共享密钥——跳过 iAP 隧道（触摸不可用）")
+            log("TUNNEL: unpaired session has no shared key - skipping iAP tunnel (touch unavailable)")
             return null
         }
         val host = receiverHost() ?: return null
@@ -1214,11 +1214,11 @@ class AirPlayClient(
             try {
                 request("SETUP", "/", body, contentType = "application/x-apple-binary-plist")
             } catch (error: IOException) {
-                log("TUNNEL: SETUP 失败 - ${error.message}")
+                log("TUNNEL: SETUP failed - ${error.message}")
                 return null
             }
         if (!statusLine.contains("200")) {
-            log("TUNNEL: SETUP 应答 [$statusLine]（响应头：${lastResponseHeadOfRequest()}）")
+            log("TUNNEL: SETUP reply [$statusLine] (headers: ${lastResponseHeadOfRequest()})")
             return null
         }
         val root =
@@ -1227,14 +1227,14 @@ class AirPlayClient(
             } catch (_: IllegalArgumentException) {
                 null
             } ?: run {
-                log("TUNNEL: SETUP 应答解析失败")
+                log("TUNNEL: SETUP reply parse failed")
                 return null
             }
         val streams = root["streams"] as? List<*>
         val stream = streams?.firstOrNull() as? Map<*, *>
         val dataPort = ((stream?.get("dataPort") as? Long) ?: 0L).toInt() and 0xFFFF
         if (dataPort == 0) {
-            log("TUNNEL: SETUP 应答无 dataPort（streams=$streams）")
+            log("TUNNEL: SETUP reply has no dataPort (streams=$streams)")
             return null
         }
         val key =
@@ -1252,13 +1252,13 @@ class AirPlayClient(
         return try {
             tcp.tcpNoDelay = true
             tcp.connect(java.net.InetSocketAddress(host, dataPort), 5_000)
-            log("TUNNEL: ✓ iAP 隧道已建立 $host:$dataPort（seed=$seed）")
+            log("TUNNEL: ✓ iAP tunnel established $host:$dataPort (seed=$seed)")
             val client = IapTunnelClient(tcp, key)
             client.startReading()
             iapTunnel = client
             client
         } catch (error: IOException) {
-            log("TUNNEL: TCP 连接失败 - ${error.message}")
+            log("TUNNEL: TCP connect failed - ${error.message}")
             runCatching { tcp.close() }
             null
         }
@@ -1289,7 +1289,7 @@ class AirPlayClient(
         sendIapCount++
         if (sendIapCount <= 10) {
             log(
-                "IAPLINK: tx(事件通道) ${data.size}B ok=$sent hex=" +
+                "IAPLINK: tx(event channel) ${data.size}B ok=$sent hex=" +
                     data.joinToString(" ") { "%02x".format(it) }.take(120),
             )
         }
@@ -1405,7 +1405,7 @@ class AirPlayClient(
                     )
                 controlIapCount++
                 val head =
-                    "IAPLINK: tx(控制通道) #$controlIapCount ${frame.size}B [$statusLine]" +
+                    "IAPLINK: tx(control channel) #$controlIapCount ${frame.size}B [$statusLine]" +
                         (if (reply.isEmpty()) "" else " resp=${reply.size}B hex=" + hexPrefix(reply))
                 if (controlIapCount <= 10 || controlIapCount % 50 == 0 || reply.isNotEmpty()) {
                     log(head)
@@ -1413,11 +1413,11 @@ class AirPlayClient(
                 // 车机可能把链路字节直接塞在应答体里（而不是另发事件通道）：认出来就喂给
                 // 链路引擎，别让它白躺在响应里。
                 if (reply.isNotEmpty() && looksLikeIapLink(reply)) {
-                    log("IAPLINK: 控制通道应答内含链路字节 ${reply.size}B → 喂给链路引擎")
+                    log("IAPLINK: control channel reply has link bytes ${reply.size}B → feeding link engine")
                     iapLink?.onCarBytes(reply)
                 }
             } catch (error: IOException) {
-                log("IAPLINK: 控制通道 POST 失败 - ${error.message}")
+                log("IAPLINK: control channel POST failed - ${error.message}")
             }
         }
     }
@@ -1437,7 +1437,7 @@ class AirPlayClient(
         limit: Int = 480,
         perLine: Int = 48,
     ): String {
-        if (bytes.isEmpty()) return "（空）"
+        if (bytes.isEmpty()) return "(empty)"
         val shown = minOf(bytes.size, limit)
         val builder = StringBuilder(shown * 3)
         var index = 0
@@ -1450,7 +1450,7 @@ class AirPlayClient(
             }
             index = end
         }
-        if (bytes.size > shown) builder.append(" …（共 ${bytes.size}B，只显示前 $shown）")
+        if (bytes.size > shown) builder.append(" ... (${bytes.size}B total, showing first $shown)")
         return builder.toString()
     }
 
@@ -1642,10 +1642,10 @@ class AirPlayClient(
         // 单档失败就换下一档，而不是每次连接都盲试同一档。
         val negotiation = profile
         log(
-            "AIRPLAY: 音频协商 → audioType=${profile.audioType} " +
+            "AIRPLAY: audio negotiation → audioType=${profile.audioType} " +
                 "format=0x${profile.formatBit.toString(16)} ${profile.sampleRate}Hz " +
-                "latency=${profile.latencyMs}ms（档位=${profile.label}，" +
-                "封装=${tuning.detail}）",
+                "latency=${profile.latencyMs}ms (profile=${profile.label}, " +
+                "framing=${tuning.detail})",
         )
         // 随机正 i64：BinaryPlist 按有符号整数编码，掩掉符号位避免负数
         val connectionId = (SecureRandom().nextLong() and Long.MAX_VALUE).coerceAtLeast(1L)
@@ -1695,12 +1695,12 @@ class AirPlayClient(
                     contentType = "application/x-apple-binary-plist",
                 )
             } catch (error: IOException) {
-                log("AIRPLAY: 音频流协商失败 - ${error.message}")
+                log("AIRPLAY: audio stream negotiation failed - ${error.message}")
                 return null
             }
-        log("AIRPLAY: 音频 SETUP 往返 ${SystemClock.uptimeMillis() - startedAt}ms [$statusLine]")
+        log("AIRPLAY: audio SETUP round trip ${SystemClock.uptimeMillis() - startedAt}ms [$statusLine]")
         if (!statusLine.contains("200")) {
-            log("AIRPLAY: 音频流协商应答 [$statusLine]")
+            log("AIRPLAY: audio stream negotiation reply [$statusLine]")
             return null
         }
         val root =
@@ -1709,24 +1709,24 @@ class AirPlayClient(
             } catch (error: IllegalArgumentException) {
                 null
             } ?: run {
-                log("AIRPLAY: 音频流协商应答解析失败")
+                log("AIRPLAY: audio stream negotiation reply parse failed")
                 return null
             }
         val streams =
             root["streams"] as? List<*> ?: run {
-                log("AIRPLAY: 音频流协商应答缺少 streams")
+                log("AIRPLAY: audio stream negotiation reply missing streams")
                 return null
             }
         val audio =
             streams.firstOrNull { entry ->
                 ((entry as? Map<*, *>)?.get("type") as? Long) == profile.streamType
             } as? Map<*, *> ?: run {
-                log("AIRPLAY: 音频流被拒绝（streams=$streams）")
+                log("AIRPLAY: audio stream rejected (streams=$streams)")
                 return null
             }
         val dataPort = portOf(audio["dataPort"])
         if (dataPort == 0) {
-            log("AIRPLAY: 音频流未返回 dataPort（$audio）")
+            log("AIRPLAY: audio stream returned no dataPort ($audio)")
             return null
         }
         val streamKey =
@@ -1736,11 +1736,11 @@ class AirPlayClient(
                 "DataStream-Output-Encryption-Key".toByteArray(Charsets.US_ASCII),
             )
         log(
-            "AIRPLAY: ✓ 音频流协商成功（type=${profile.streamType} ${negotiation.audioType} " +
+            "AIRPLAY: ✓ audio stream negotiated (type=${profile.streamType} ${negotiation.audioType} " +
                 "format=0x${negotiation.formatBit.toString(16)} ${negotiation.sampleRate}Hz " +
-                "latency=${negotiation.latencyMs}ms）" +
+                "latency=${negotiation.latencyMs}ms) " +
                 "dataPort=$dataPort controlPort=${portOf(audio["controlPort"])} connId=$connectionId" +
-                " 全字段=$audio",
+                " all fields=$audio",
         )
         // 音频通路已建好，但「车机在收数据、喇叭没声」还剩一种很常见的原因：
         // 接收端的 AirPlay 音量处于静音位（-144dB）——真 iPhone 会主动 SET_PARAMETER
@@ -1780,14 +1780,14 @@ class AirPlayClient(
                         contentType = "text/parameters",
                     )
                 val text = body.toString(Charsets.UTF_8).trim()
-                log("AIRPLAY: 车机音量查询 $status body=${text.take(160)}")
+                log("AIRPLAY: head unit volume query $status body=${text.take(160)}")
                 VOLUME_REGEX
                     .find(text)
                     ?.groupValues
                     ?.get(1)
                     ?.toFloatOrNull()
             } catch (error: Exception) {
-                log("AIRPLAY: 车机音量查询失败 - ${error.message}（忽略，不影响音频流）")
+                log("AIRPLAY: head unit volume query failed - ${error.message} (ignored, audio stream unaffected)")
                 null
             }
         // 查得到且不在静音位：尊重车机当前音量，不再覆盖。
@@ -1807,13 +1807,13 @@ class AirPlayClient(
                 )
             log(
                 if (volume == null) {
-                    "AIRPLAY: 车机不支持音量查询 → 仍下发音量 $SAFE_VOLUME_DB dB（$status ${body.size}B）"
+                    "AIRPLAY: head unit has no volume query → still setting volume $SAFE_VOLUME_DB dB ($status ${body.size}B)"
                 } else {
-                    "AIRPLAY: 车机音量在静音位（$volume dB）→ 已设为 $SAFE_VOLUME_DB dB（$status ${body.size}B）"
+                    "AIRPLAY: head unit volume muted ($volume dB) → set to $SAFE_VOLUME_DB dB ($status ${body.size}B)"
                 },
             )
         } catch (error: Exception) {
-            log("AIRPLAY: 设置车机音量失败 - ${error.message}")
+            log("AIRPLAY: setting head unit volume failed - ${error.message}")
         }
     }
 
@@ -1846,7 +1846,7 @@ class AirPlayClient(
                 ?.mapNotNull { it as? Map<*, *> }
                 .orEmpty()
         if (declared.isEmpty()) {
-            log("AIRPLAY: 车机 /info 未声明 audioFormats → 按协议基线尝试")
+            log("AIRPLAY: head unit /info declares no audioFormats → trying protocol baseline")
             return baseline
         }
 
@@ -1922,12 +1922,12 @@ class AirPlayClient(
                 pcm.sortedBy { priority(it.audioType) }
         if (ordered.isEmpty()) {
             log(
-                "AIRPLAY: 车机未声明可用的 AAC-LC / PCM 立体声格式" +
-                    "（共 ${declared.size} 档）→ 仍按基线尝试",
+                "AIRPLAY: head unit declares no usable AAC-LC / PCM stereo format" +
+                    " (${declared.size} profiles total) → trying baseline anyway",
             )
             return baseline
         }
-        log("AIRPLAY: 音频候选（按偏好）=${ordered.map { it.label }}")
+        log("AIRPLAY: audio candidates (by preference)=${ordered.map { it.label }}")
         return ordered.distinctBy { it.key }
     }
 
@@ -1981,11 +1981,11 @@ class AirPlayClient(
                 .randomUUID()
                 .toString()
         log(
-            "AIRPLAY: 主屏流 SETUP uuid=$streamUuid " +
+            "AIRPLAY: main screen stream SETUP uuid=$streamUuid " +
                 if (displayUuid == null) {
-                    "（⚠️ /info 未提供 displayUuid，只能用随机值——车机可能收下流却不绑到任何屏）"
+                    "(⚠️ /info has no displayUuid, using random value - head unit may accept stream but bind no screen)"
                 } else {
-                    "（来自 /info displays[].uuid）"
+                    "(from /info displays[].uuid)"
                 },
         )
         val body =
@@ -2016,13 +2016,13 @@ class AirPlayClient(
                     contentType = "application/x-apple-binary-plist",
                 )
             } catch (error: IOException) {
-                log("AIRPLAY: 流协商失败 - ${error.message}")
+                log("AIRPLAY: stream negotiation failed - ${error.message}")
                 return null
             }
         if (!statusLine.contains("200")) {
             log(
-                "AIRPLAY: 流协商应答 [$statusLine]（响应头：${lastResponseHeadOfRequest()}）\n" +
-                    "  ↳ 请求体(${body.size}B)=" + body.joinToString("") { "%02x".format(it) },
+                "AIRPLAY: stream negotiation reply [$statusLine] (headers: ${lastResponseHeadOfRequest()})\n" +
+                    "  ↳ request body(${body.size}B)=" + body.joinToString("") { "%02x".format(it) },
             )
             return null
         }
@@ -2032,18 +2032,18 @@ class AirPlayClient(
             } catch (error: IllegalArgumentException) {
                 null
             } ?: run {
-                log("AIRPLAY: 流协商应答解析失败")
+                log("AIRPLAY: stream negotiation reply parse failed")
                 return null
             }
         val streams =
             root["streams"] as? List<*> ?: run {
-                log("AIRPLAY: 流协商应答缺少 streams")
+                log("AIRPLAY: stream negotiation reply missing streams")
                 return null
             }
         val screen = streams.firstOrNull() as? Map<*, *>
         val dataPort = portOf(screen?.get("dataPort"))
         if (screen == null || dataPort == 0) {
-            log("AIRPLAY: 主屏流被拒绝（streams=$streams）")
+            log("AIRPLAY: main screen stream rejected (streams=$streams)")
             return null
         }
         val cipher =
@@ -2054,8 +2054,8 @@ class AirPlayClient(
                 StreamFrameCipher.AesCtr(key, iv)
             }
         log(
-            "AIRPLAY: ✓ 主屏流协商成功 dataPort=$dataPort connId=$connectionId " +
-                "加密=${if (cipher is StreamFrameCipher.ChaCha) "ChaCha20" else "AES-128-CTR（未配对会话）"}",
+            "AIRPLAY: ✓ main screen stream negotiated dataPort=$dataPort connId=$connectionId " +
+                "cipher=${if (cipher is StreamFrameCipher.ChaCha) "ChaCha20" else "AES-128-CTR (unpaired session)"}",
         )
         // MIB3：屏幕流 SETUP 200 拿到 dataPort 后，真机此时在控制通道发 detect（Frida
         // 时序：screen SETUP → phone detect on control → HU SYN on control）。见 armMib3VirtualLink。
@@ -2074,10 +2074,10 @@ class AirPlayClient(
                     contentType = "application/x-apple-binary-plist",
                 )
             val ok = statusLine.contains("200")
-            log(if (ok) "AIRPLAY: ✓ RECORD 完成——会话已激活" else "AIRPLAY: RECORD 应答 [$statusLine]")
+            log(if (ok) "AIRPLAY: ✓ RECORD done - session active" else "AIRPLAY: RECORD reply [$statusLine]")
             ok
         } catch (error: IOException) {
-            log("AIRPLAY: RECORD 失败 - ${error.message}")
+            log("AIRPLAY: RECORD failed - ${error.message}")
             false
         }
 
@@ -2095,7 +2095,7 @@ class AirPlayClient(
         onCommand: (Map<*, *>) -> Unit = {},
     ) {
         if (setup.eventPort == 0) {
-            log("EVENT: SETUP 未提供 eventPort，跳过")
+            log("EVENT: SETUP gave no eventPort, skipping")
             return
         }
         val host = receiverHost() ?: return
@@ -2105,8 +2105,8 @@ class AirPlayClient(
             socket.tcpNoDelay = true
             socket.soTimeout = 30_000
             // 事件通道同样是长连接：对端消失时要能自己发现（见 TcpLiveness 注释）。
-            TcpLiveness.configure(socket, "事件通道", log)
-            log("EVENT: ✓ 已连接事件通道 $host:${setup.eventPort}（${if (sessionKey != null) "加密" else "明文"}）")
+            TcpLiveness.configure(socket, "event channel", log)
+            log("EVENT: ✓ event channel connected $host:${setup.eventPort} (${if (sessionKey != null) "encrypted" else "plaintext"})")
             val cipher =
                 sessionKey?.let { secret ->
                     val phoneWriteKey =
@@ -2140,7 +2140,7 @@ class AirPlayClient(
                                 continue
                             }
                         if (count < 0) {
-                            log("EVENT: 通道关闭（EOF）")
+                            log("EVENT: channel closed (EOF)")
                             break
                         }
                         pending += buffer.copyOf(count)
@@ -2171,7 +2171,7 @@ class AirPlayClient(
                             if (!firstLine.contains("/command")) {
                                 unknownEventRequests++
                                 if (unknownEventRequests <= 10) {
-                                    log("EVENT: 未知请求 [$firstLine] body=${message.body.size}B")
+                                    log("EVENT: unknown request [$firstLine] body=${message.body.size}B")
                                 }
                                 continue
                             }
@@ -2180,7 +2180,7 @@ class AirPlayClient(
                                 try {
                                     val result = BinaryPlist.parseRecovered(message.body)
                                     result.note?.let { note ->
-                                        log("EVENT: /command 容错解析成功——$note")
+                                        log("EVENT: /command lenient parse OK - $note")
                                     }
                                     result.value
                                 } catch (error: Throwable) {
@@ -2198,36 +2198,36 @@ class AirPlayClient(
                                     message.body.size.toString() + ":" + hexPrefix(message.body, 8)
                                 if (badEventSignatures.add(signature) && badEventSignatures.size <= 4) {
                                     log(
-                                        "EVENT: 命令无法识别 [$firstLine] body=${message.body.size}B " +
-                                            "原因=" + (commandError ?: "解析结果=${parsed?.javaClass?.simpleName}"),
+                                        "EVENT: unrecognised command [$firstLine] body=${message.body.size}B " +
+                                            "reason=" + (commandError ?: "parsed=${parsed?.javaClass?.simpleName}"),
                                     )
                                     log(
-                                        "EVENT: 命令报文头=" +
+                                        "EVENT: command headers=" +
                                             message.head.replace("\r\n", " | ").take(300),
                                     )
-                                    log("EVENT: 命令报文体（${message.body.size}B）hex=" + hexDump(message.body))
+                                    log("EVENT: command body (${message.body.size}B) hex=" + hexDump(message.body))
                                 }
                                 if (badEventCommands % 120 == 0) {
-                                    log("EVENT: 累计 $badEventCommands 条 /command 解析失败（已静默，仅计数）")
+                                    log("EVENT: $badEventCommands /command parse failures so far (silenced, counting only)")
                                 }
                                 continue
                             }
                             try {
                                 onCommand(command)
                             } catch (error: Exception) {
-                                log("EVENT: 命令处理异常 - ${error.message}")
+                                log("EVENT: command handling error - ${error.message}")
                             }
                         }
                     }
                 } catch (error: IOException) {
-                    log("EVENT: 读取结束 - ${error.message}")
+                    log("EVENT: read ended - ${error.message}")
                 }
             }, "event-reader").apply {
                 isDaemon = true
                 start()
             }
         } catch (error: IOException) {
-            log("EVENT: 连接失败 - ${error.message}")
+            log("EVENT: connect failed - ${error.message}")
         }
     }
 
@@ -2290,11 +2290,11 @@ class AirPlayClient(
         val generation = endpointGeneration
         val candidates = EndpointHosts.candidates(target.ipAddresses)
         if (candidates.isEmpty()) {
-            log("AIRPLAY: 0x4301/ mDNS 未提供可用地址，无法连接")
+            log("AIRPLAY: 0x4301/mDNS gave no usable address, cannot connect")
             return false
         }
         if (target.airPlayPort <= 0) {
-            log("AIRPLAY: 端口未知（${target.airPlayPort}），无法连接")
+            log("AIRPLAY: unknown port (${target.airPlayPort}), cannot connect")
             return false
         }
         val failures = ArrayList<String>(candidates.size)
@@ -2303,7 +2303,7 @@ class AirPlayClient(
                 try {
                     resolveAddress(host)
                 } catch (error: Exception) {
-                    failures += "$host（解析失败：${error.message}）"
+                    failures += "$host (resolve failed: ${error.message})"
                     continue
                 }
             try {
@@ -2319,20 +2319,20 @@ class AirPlayClient(
                 newSocket.soTimeout = 0
                 // 对端健康检查：内核默认 keepalive 要等 2 小时才开始探测，而车机熄火/
                 // 走出热点时链路常不发 RST，读线程会一直挂着（画面冻结、看门狗不触发）。
-                TcpLiveness.configure(newSocket, "控制通道", log)
+                TcpLiveness.configure(newSocket, "control channel", log)
                 socket = newSocket
                 activeAddress = address
                 activeHost = addressLiteral(address)
-                log("AIRPLAY: TCP 已连通 $activeHost:${target.airPlayPort}（本机 ${newSocket.localAddress.hostAddress}）")
+                log("AIRPLAY: TCP connected $activeHost:${target.airPlayPort} (local ${newSocket.localAddress.hostAddress})")
                 return true
             } catch (error: IOException) {
-                failures += "$host（${error.message}）"
+                failures += "$host (${error.message})"
             }
         }
         log(
-            "AIRPLAY: 连接失败 - ${failures.joinToString("；")}\n" +
-                "  ↳ 若反复失败：确认手机当前连的是接收端热点 \"${target.ssid}\"，" +
-                "而不是家里/公司 WiFi（绑定到的网络不对时到达不了车机网段）",
+            "AIRPLAY: connect failed - ${failures.joinToString("; ")}\n" +
+                "  ↳ if this keeps failing: make sure the phone is on the receiver hotspot \"${target.ssid}\", " +
+                "not home/office WiFi (a wrongly bound network cannot reach the head unit subnet)",
         )
         return false
     }
@@ -2385,7 +2385,7 @@ class AirPlayClient(
     ): ByteArray {
         val (statusLine, responseBody) = request("POST", path, body)
         if (!statusLine.contains("200")) {
-            throw IOException("POST $path 应答 [$statusLine]")
+            throw IOException("POST $path reply [$statusLine]")
         }
         return responseBody
     }
@@ -2423,7 +2423,7 @@ class AirPlayClient(
                 if (responseBody.isNotEmpty()) " head=[$headHex]" else "",
         )
         if (!statusLine.contains("200")) {
-            throw IOException("POST $path 应答 [$statusLine]")
+            throw IOException("POST $path reply [$statusLine]")
         }
         return responseBody
     }
@@ -2436,7 +2436,7 @@ class AirPlayClient(
         contentType: String = "application/octet-stream",
         extraHeaders: List<Pair<String, String>> = emptyList(),
     ): Pair<String, ByteArray> {
-        val client = socket ?: throw IOException("未连接")
+        val client = socket ?: throw IOException("Not connected")
         val startedAt = SystemClock.uptimeMillis()
         startReader(client)
         val queue = java.util.concurrent.LinkedBlockingQueue<Pair<String, ByteArray>>(1)
@@ -2473,20 +2473,20 @@ class AirPlayClient(
         val response =
             try {
                 queue.poll(timeoutMillis.toLong(), java.util.concurrent.TimeUnit.MILLISECONDS)
-                    ?: throw IOException("RTSP 超时（${timeoutMillis}ms，CSeq=$cseq $method $path）")
+                    ?: throw IOException("RTSP timeout (${timeoutMillis}ms, CSeq=$cseq $method $path)")
             } catch (error: InterruptedException) {
                 Thread.currentThread().interrupt()
-                throw IOException("RTSP 被中断（CSeq=$cseq $method $path）")
+                throw IOException("RTSP interrupted (CSeq=$cseq $method $path)")
             } finally {
                 pendingResponses.remove(cseq)
             }
         // 慢应答留痕：>1.5s 说明车机在内部仲裁（同类问题排查的第一手证据）
         val elapsed = SystemClock.uptimeMillis() - startedAt
         if (elapsed > 1_500) {
-            log("AIRPLAY: 慢应答 ${elapsed}ms（$method $path，CSeq=$cseq）——等待期间心跳未中断")
+            log("AIRPLAY: slow reply ${elapsed}ms ($method $path, CSeq=$cseq) - heartbeats kept running meanwhile")
         }
         if (response.first == RTSP_CLOSED_MARK) {
-            throw IOException("控制通道已关闭（CSeq=$cseq $method $path）")
+            throw IOException("Control channel closed (CSeq=$cseq $method $path)")
         }
         lastRequestCSeq.set(cseq)
         return response
@@ -2535,7 +2535,7 @@ class AirPlayClient(
                             try {
                                 synchronized(encryption) { encryption.decrypt(cipherPending) }
                             } catch (error: Exception) {
-                                log("AIRPLAY: 控制通道解密失败 - ${error.message}")
+                                log("AIRPLAY: control channel decrypt failed - ${error.message}")
                                 break
                             }
                         cipherPending = decrypted.rest
@@ -2553,7 +2553,7 @@ class AirPlayClient(
         } finally {
             // 只由「当前」读线程清账：重连会换 socket 与新读线程，旧线程不得误伤新会话
             if (generation == readerGeneration) {
-                failAllPending("控制通道读线程结束")
+                failAllPending("control channel reader ended")
             }
         }
     }
@@ -2596,7 +2596,7 @@ class AirPlayClient(
         unmatchedMessages++
         if (unmatchedMessages <= 5) {
             log(
-                "AIRPLAY: 控制通道无匹配报文（#$unmatchedMessages）" +
+                "AIRPLAY: unmatched control channel message (#$unmatchedMessages) " +
                     "[$statusLine] cseq=${message.cseq} request=${message.isRequest} body=${body.size}B",
             )
         }
@@ -2629,7 +2629,7 @@ class AirPlayClient(
         val waiting = pendingResponses.values.toList()
         pendingResponses.clear()
         if (waiting.isEmpty()) return
-        log("AIRPLAY: $reason——唤醒 ${waiting.size} 个待响应请求")
+        log("AIRPLAY: $reason - waking ${waiting.size} pending requests")
         waiting.forEach { it.offer(RTSP_CLOSED_MARK to ByteArray(0)) }
     }
 
@@ -2838,7 +2838,7 @@ class AirPlayClient(
         // 顶层字段全量清单（键: 类型）——车机把能力藏在哪个键下一目了然，避免只认得
         // Apple 官方那几个键（宝马 iD9 的 HID 声明可能就在我们没解析的键上）
         log(
-            "AIRPLAY: /info 顶层字段(${root.size})=" +
+            "AIRPLAY: /info top-level fields(${root.size})=" +
                 root.entries.joinToString(" ") { (key, value) -> "$key:${typeName(value)}" },
         )
         // 任何名字里带 hid 的键都完整打印（设备清单 + 描述符是触摸通路的前提）
@@ -2847,7 +2847,7 @@ class AirPlayClient(
             .forEach { (key, value) -> log("AIRPLAY: /info $key=$value") }
         val features = root["features"] as? Long
         log(
-            "AIRPLAY: /info 摘要 name=${root["name"]} model=${root["model"]} " +
+            "AIRPLAY: /info summary name=${root["name"]} model=${root["model"]} " +
                 "deviceID=${root["deviceID"]}" +
                 if (features != null) " features=0x${features.toString(16)}" else "",
         )
@@ -2855,7 +2855,7 @@ class AirPlayClient(
             log("AIRPLAY: /info displays[$index]=$display")
             if (display is Map<*, *>) {
                 log(
-                    "AIRPLAY: /info displays[$index] 键值=" +
+                    "AIRPLAY: /info displays[$index] entries=" +
                         display.entries.joinToString(" ") { (key, value) ->
                             "$key=${value.toString().take(80)}"
                         },
@@ -2871,7 +2871,7 @@ class AirPlayClient(
             log(
                 "AIRPLAY: audioFormat[$index] type=${format["type"]} audioType=${format["audioType"]} " +
                     "output=0x${output.toString(16)} input=0x${input.toString(16)}" +
-                    "（PCM48k立体声 bit15=${if ((output and (1L shl 15)) != 0L) "✓" else "✗"}）",
+                    " (PCM48k stereo bit15=${if ((output and (1L shl 15)) != 0L) "✓" else "✗"})",
             )
         }
         (root["audioLatencies"] as? List<*>)?.forEachIndexed { index, entry ->

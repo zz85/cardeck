@@ -150,14 +150,14 @@ object ConsumerKeys {
     /** 可读名称（日志用）。 */
     fun nameOf(usage: Int): String =
         when (usage) {
-            0xB0 -> "播放"
-            0xB1 -> "暂停"
-            0xB3 -> "快进"
-            0xB4 -> "快退"
-            0xB5 -> "下一首"
-            0xB6 -> "上一首"
-            0xB9 -> "停止"
-            0xBC -> "循环"
-            else -> "未知(0x%02x)".format(usage)
+            0xB0 -> "Play"
+            0xB1 -> "Pause"
+            0xB3 -> "Fast forward"
+            0xB4 -> "Rewind"
+            0xB5 -> "Next"
+            0xB6 -> "Previous"
+            0xB9 -> "Stop"
+            0xBC -> "Repeat"
+            else -> "Unknown(0x%02x)".format(usage)
         }
 }

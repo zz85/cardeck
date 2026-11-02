@@ -25,74 +25,88 @@ internal object DisclaimerContent {
     val sections: List<Section> =
         listOf(
             Section(
-                title = "这是什么",
+                title = "What this is",
                 body =
-                    "CarDeck 是一个非官方的实验性项目：让一台未 root 的 Android 手机扮演 " +
-                        "CarPlay 发送端（iPhone 角色），把手机上的车机桌面与第三方应用投到" +
-                        "支持的接收端上显示，并把接收端触摸回注到手机侧的虚拟屏。\n\n" +
-                        "本项目与 Apple Inc.、任何汽车厂商均无关联，未获得任何授权或认证，" +
-                        "也不是 MFi 认证产品。「CarPlay」「AirPlay」是 Apple Inc. 的商标，" +
-                        "此处仅用于说明兼容目标，不表示任何关联或背书。",
+                    "CarDeck is an unofficial, experimental project: it lets a non-rooted Android phone act as a " +
+                        "CarPlay sender (the iPhone role), projecting the head-unit home screen and third-party apps " +
+                        "from the phone onto a supported receiver, and injecting the receiver's touch input back into " +
+                        "virtual displays on the phone.\n\n" +
+                        "This project is not affiliated with Apple Inc. or any car manufacturer, has not received any " +
+                        "authorization or certification, and is not an MFi-certified product. \"CarPlay\" and " +
+                        "\"AirPlay\" are trademarks of Apple Inc., used here only to describe the compatibility target; " +
+                        "no affiliation or endorsement is implied.",
             ),
             Section(
-                title = "开发中，可能随时出问题",
+                title = "In development; things may break at any time",
                 body =
-                    "当前为开发测试版本，功能、界面与协议实现都可能随时变更，可能存在未发现的" +
-                        "缺陷。不承诺任何稳定性、兼容性或可用性。\n\n" +
-                        "已经测试过的组合只有：\n" +
-                        "· 发送端：荣耀 Magic7 Pro（Android 17）\n" +
-                        "· 接收端：奥迪 MIB3 车机（真车）\n" +
-                        "· 接收端：Redmi K40 上的 DiPlay 测试台（Android 13）\n\n" +
-                        "其他手机、其他 Android 版本、其他车型均未验证，可能完全无法工作，" +
-                        "也可能出现画面异常、触摸错位或反复断连。\n\n" +
-                        "「应用横屏」功能需要 Android 14 及以上系统；Android 13 及更早机型" +
-                        "该功能不可用（设置面板会提示不支持）。",
+                    "This is a development/test build. Features, UI and protocol implementation may change at any " +
+                        "time, and there may be undiscovered defects. No stability, compatibility or availability is " +
+                        "guaranteed.\n\n" +
+                        "The only combinations tested so far are:\n" +
+                        "· Sender: Honor Magic7 Pro (Android 17)\n" +
+                        "· Receiver: Audi MIB3 head unit (real car)\n" +
+                        "· Receiver: DiPlay test bench on a Redmi K40 (Android 13)\n\n" +
+                        "Other phones, other Android versions and other car models are unverified; they may not work at " +
+                        "all, or may show display glitches, misaligned touch or repeated disconnects.\n\n" +
+                        "The \"Force landscape\" feature requires Android 14 or later; on Android 13 and earlier it is " +
+                        "unavailable (the settings panel will say it is not supported).",
             ),
             Section(
-                title = "驾驶安全（请务必阅读）",
+                title = "Driving safety (must read)",
                 body =
-                    "本应用不是安全关键系统，不能替代原厂导航与车辆仪表。\n\n" +
-                        "· 请在停车状态下完成连接、配对与所有设置；\n" +
-                        "· 行驶过程中如需操作，必须由车上的乘客进行，驾驶员不得手持或操作手机；\n" +
-                        "· 无线链路可能因信号干扰、系统休眠、热点切换、蓝牙重连等原因随时中断，" +
-                        "表现为画面冻结、黑屏、触摸失灵或导航中断；\n" +
-                        "· 行驶中断连可能导致错过路口、路线丢失或注意力分散。" +
-                        "请始终以车机原厂导航作为安全冗余，并对实际驾驶行为负全部责任。",
+                    "This app is not a safety-critical system and cannot replace the factory navigation or the " +
+                        "vehicle's instrument cluster.\n\n" +
+                        "· Complete connecting, pairing and all settings while parked;\n" +
+                        "· Any operation while driving must be done by a passenger; the driver must not hold or operate " +
+                        "the phone;\n" +
+                        "· The wireless link may drop at any time due to signal interference, system sleep, hotspot " +
+                        "switching, Bluetooth reconnection and other causes, resulting in a frozen picture, black " +
+                        "screen, unresponsive touch or interrupted navigation;\n" +
+                        "· A disconnect while driving may cause you to miss a turn, lose your route or become distracted. " +
+                        "Always keep the head unit's factory navigation as a safety backup, and take full " +
+                        "responsibility for how you actually drive.",
             ),
             Section(
-                title = "系统权限与数据",
+                title = "System permissions and data",
                 body =
-                    "为了正常工作，本应用会请求并使用以下能力，请确认你理解后再授权：\n\n" +
-                        "· Shizuku（shell 权限）：用于创建受信虚拟屏、注入触摸事件、写入系统" +
-                        "兼容性设置（如强制应用横屏）、读取窗口与显示状态。本应用不会用它执行" +
-                        "与本应用服务无关的命令；\n" +
-                        "· 通知使用权 / 媒体会话：仅用于在车机桌面显示当前播放的音乐信息" +
-                        "（歌名、歌手、封面、播放进度）；\n" +
-                        "· 蓝牙：用于与接收端配对（只配对，不建立蓝牙音频连接）；\n" +
-                        "· 屏幕录制（投屏）授权：仅在开启「车机侧声音」时用于捕获音频。\n\n" +
-                        "配对信息、目标设备名称、壁纸与设置项仅保存在本机，不会上传到任何服务器；" +
-                        "本应用不含统计分析或广告 SDK。",
+                    "To work properly, this app requests and uses the following capabilities. Make sure you " +
+                        "understand them before granting access:\n\n" +
+                        "· Shizuku (shell permission): used to create trusted virtual displays, inject touch events, " +
+                        "write system compatibility settings (e.g. forcing apps into landscape), and read window and " +
+                        "display state. This app will not use it to run commands unrelated to this app's " +
+                        "functions;\n" +
+                        "· Notification access / media sessions: used only to show the currently playing music on the " +
+                        "head-unit home screen (title, artist, cover art, playback progress);\n" +
+                        "· Bluetooth: used to pair with the receiver (pairing only; no Bluetooth audio connection is " +
+                        "established);\n" +
+                        "· Screen recording (projection) permission: used only to capture audio when car audio is " +
+                        "turned on.\n\n" +
+                        "Pairing info, target device names, wallpapers and settings are stored only on this device and " +
+                        "are never uploaded to any server; this app contains no analytics or advertising SDKs.",
             ),
             Section(
-                title = "免责条款",
+                title = "Disclaimer of liability",
                 body =
-                    "本应用按「现状」提供，不附带任何明示或默示的担保，包括但不限于适销性、" +
-                        "特定用途适用性与不侵权担保。\n\n" +
-                        "在适用法律允许的最大范围内，作者与贡献者不对因使用或无法使用本应用而" +
-                        "产生的任何直接或间接损失承担责任，包括但不限于：连接中断、导航或通话" +
-                        "中断、数据丢失、设备异常、车辆系统异常，以及因驾驶中操作或分心导致的" +
-                        "事故与损失。\n\n" +
-                        "你是否使用本应用、如何配置与操作、以及在何种场景下使用，完全由你自行" +
-                        "判断并自行承担风险。若你不同意上述任何一条，请点击「放弃使用」并卸载" +
-                        "本应用。",
+                    "This app is provided \"as is\", without warranty of any kind, express or implied, including " +
+                        "but not limited to the warranties of merchantability, fitness for a particular purpose and " +
+                        "non-infringement.\n\n" +
+                        "To the maximum extent permitted by applicable law, the authors and contributors shall not be " +
+                        "liable for any direct or indirect loss arising from the use of or inability to use this app, " +
+                        "including but not limited to: dropped connections, interrupted navigation or calls, data " +
+                        "loss, device malfunctions, vehicle system malfunctions, and accidents and losses caused by " +
+                        "operating the phone or being distracted while driving.\n\n" +
+                        "Whether you use this app, how you configure and operate it, and in what situations you use " +
+                        "it are entirely your own judgment and at your own risk. If you do not agree with any of the " +
+                        "above, tap \"Decline\" and uninstall this app.",
             ),
             Section(
-                title = "开源与反馈",
+                title = "Open source and feedback",
                 body =
-                    "本项目为个人实验性作品，以 MIT 许可证开源，欢迎反馈问题，但不承诺修复时限。" +
-                        "由于涉及协议实现与第三方 ROM 差异，部分问题可能无法解决。\n\n" +
-                        "完整条款（非官方声明、商标归属、安全警告、已测试范围）见仓库根目录的 " +
-                        "DISCLAIMER.md，与本页内容同源。",
+                    "This is a personal experimental project, open-sourced under the MIT License. Issue reports are " +
+                        "welcome, but no timeline for fixes is promised. Because it involves protocol implementation " +
+                        "and differences between third-party ROMs, some issues may not be solvable.\n\n" +
+                        "For the full terms (unofficial status, trademark ownership, safety warnings, tested scope), " +
+                        "see DISCLAIMER.md in the repository root, which shares the same source as this page.",
             ),
         )
 }

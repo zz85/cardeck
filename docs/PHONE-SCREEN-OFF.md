@@ -1,135 +1,135 @@
-# 手机物理息屏（真息屏）+ 虚拟屏独立常亮
+# Physical phone screen off (true screen-off) + virtual displays stay on independently
 
-> 2026-10-23。目标：手机黑屏揣进兜里，车机侧照常 60fps 交互。
-> 代码：`shizuku/CarInputServiceImpl.setPhysicalScreenPower` +
-> `SessionController.enterPhoneScreenOff`。
+> 2026-10-23. Goal: phone screen black in your pocket, while the head unit keeps interacting at 60fps.
+> Code: `shizuku/CarInputServiceImpl.setPhysicalScreenPower` +
+> `SessionController.enterPhoneScreenOff`.
 
-## 1. 为什么不是「按电源键」
+## 1. Why not "press the power button"
 
-按电源键/调 `PowerManager.goToSleep` 会进入 **锁屏 + Doze**：
+Pressing the power button / calling `PowerManager.goToSleep` enters **lock screen + Doze**:
 
-- Keyguard 挡住虚拟屏（车机看到锁屏或黑屏）；
-- CPU 降频/挂起，编码器与协议线程被拖死。
+- Keyguard blocks the virtual displays (the head unit shows the lock screen or black);
+- CPU is throttled/suspended, starving the encoder and protocol threads.
 
-scrcpy 的 `-S/--turn-screen-off` 走的是另一条路：**系统逻辑上保持「亮屏且未上锁」**，
-只把**物理面板的电源**在 SurfaceFlinger 层切断。CarDeck 照抄这个做法。
+scrcpy's `-S/--turn-screen-off` takes a different route: **logically the system stays "screen on and unlocked"**,
+and only **the physical panel's power** is cut at the SurfaceFlinger layer. CarDeck copies this approach.
 
-## 2. 三个关键点
+## 2. Three key points
 
-### 2.1 虚拟屏要进独立显示组
+### 2.1 Virtual displays must be in their own display group
 
-受信虚拟屏（app/appHi/map）额外声明两个 @hide flag：
+Trusted virtual displays (app/appHi/map) additionally declare two @hide flags:
 
-| Flag | 值 | 作用 | 额外权限 |
+| Flag | Value | Effect | Extra permission |
 |---|---|---|---|
-| `OWN_DISPLAY_GROUP` | `1<<11 = 0x800` | 虚拟屏进自己的 DisplayGroup，主屏休眠/断电时不跟着 OFF | `ADD_TRUSTED_DISPLAY`（受信屏本来就要求） |
-| `ALWAYS_UNLOCKED` | `1<<12 = 0x1000` | 锁屏时该屏不画 Keyguard | `ADD_ALWAYS_UNLOCKED_DISPLAY`（**部分 ROM 没给 shell**） |
+| `OWN_DISPLAY_GROUP` | `1<<11 = 0x800` | The virtual display gets its own DisplayGroup and doesn't turn OFF when the main display sleeps/powers off | `ADD_TRUSTED_DISPLAY` (already required for trusted displays) |
+| `ALWAYS_UNLOCKED` | `1<<12 = 0x1000` | No Keyguard drawn on this display when locked | `ADD_ALWAYS_UNLOCKED_DISPLAY` (**some ROMs don't grant it to shell**) |
 
-`DisplayManagerService.createVirtualDisplayInternal` 对两者都有显式权限校验，缺权限直接
-`SecurityException`。所以 `createDisplay` 是**三级降级**：`独立组+ALWAYS_UNLOCKED` →
-`独立组` → 基础 flags，任何一级失败都会留痕并继续，不会整块屏打挂。
+`DisplayManagerService.createVirtualDisplayInternal` explicitly checks permissions for both; a missing permission throws
+`SecurityException` directly. So `createDisplay` uses a **three-level fallback**: `own group+ALWAYS_UNLOCKED` →
+`own group` → basic flags; any level that fails is logged and we continue, so the whole display never fails.
 
-注意 `PUBLIC` 会隐式加 `AUTO_MIRROR`，而 `AUTO_MIRROR` 会把 `OWN_DISPLAY_GROUP` 清掉——
-我们同时声明了 `OWN_CONTENT_ONLY`（清掉 AUTO_MIRROR），所以独立显示组能保留。
+Note that `PUBLIC` implicitly adds `AUTO_MIRROR`, and `AUTO_MIRROR` clears `OWN_DISPLAY_GROUP` —
+we also declare `OWN_CONTENT_ONLY` (which clears AUTO_MIRROR), so the own display group is kept.
 
-**dock 屏也必须独立成组**（2026-10-23 实测）：dock 是**不受信**屏，原来只拿基础 flags，
-于是落进默认显示组——物理面板一断电，整组跟着灭，车机侧表现为「app 屏正常、dock 栏全黑，
-解锁后恢复」。修法是给 dock 也加 `OWN_DISPLAY_GROUP`（带回退）：
-AOSP 只在 `AUTO_MIRROR` 时清这个 flag，而 `AUTO_MIRROR` 只随 `PUBLIC` 自动置上，
-dock 没声明 `PUBLIC`，所以 flag 会保留；`OWN_DISPLAY_GROUP` 只要求 `ADD_TRUSTED_DISPLAY`，
-不改变 dock「不受信」的语义（第三方任务仍然上不去）。
+**The dock display must also be in its own group** (tested 2026-10-23): the dock is an **untrusted** display that originally only got basic flags,
+so it landed in the default display group — once the physical panel powers off, the whole group goes dark; on the head unit this shows as "app display fine, dock bar fully black,
+recovers after unlocking". The fix is to give the dock `OWN_DISPLAY_GROUP` too (with fallback):
+AOSP only clears this flag with `AUTO_MIRROR`, and `AUTO_MIRROR` is only set automatically along with `PUBLIC`;
+the dock doesn't declare `PUBLIC`, so the flag is kept; `OWN_DISPLAY_GROUP` only requires `ADD_TRUSTED_DISPLAY`,
+and doesn't change the dock's "untrusted" semantics (third-party tasks still can't go there).
 
-### 2.2 物理面板断电：`SurfaceControl.setDisplayPowerMode`
+### 2.2 Powering off the physical panel: `SurfaceControl.setDisplayPowerMode`
 
-对**物理主屏 token** 调 `setDisplayPowerMode(token, 0)`（0=OFF，2=NORMAL）。
-框架仍认为屏幕亮着 → 不锁屏、不进 Doze；触摸 IC 也随面板断电，口袋误触无效。
+Call `setDisplayPowerMode(token, 0)` on the **physical main display token** (0=OFF, 2=NORMAL).
+The framework still thinks the screen is on → no lock screen, no Doze; the touch IC also loses power with the panel, so pocket touches have no effect.
 
-**Android 14 起取 token 的方式变了**（这是最容易踩的坑）：
+**Starting with Android 14 the way to get the token changed** (this is the easiest pitfall):
 
-- SDK ≤ 33：`SurfaceControl.getInternalDisplayToken()`，退路是
-  `getPhysicalDisplayIds()` + `getPhysicalDisplayToken(id)`；
-- SDK ≥ 34：上述方法**已从 SurfaceControl 删除**，只能用
-  `com.android.server.display.DisplayControl`。它在 `services.jar` 里，普通类加载器看不到，
-  必须用 `ClassLoaderFactory.createClassLoader(SYSTEMSERVERCLASSPATH, ...)` 造一个类加载器，
-  再 `Runtime.loadLibrary0(cls, "android_servers")` 把 JNI 方法注册进去（scrcpy 同款）。
+- SDK ≤ 33: `SurfaceControl.getInternalDisplayToken()`, with fallback
+  `getPhysicalDisplayIds()` + `getPhysicalDisplayToken(id)`;
+- SDK ≥ 34: the methods above **were removed from SurfaceControl**; the only way is
+  `com.android.server.display.DisplayControl`. It lives in `services.jar`, invisible to the normal class loader, so
+  you must create a class loader with `ClassLoaderFactory.createClassLoader(SYSTEMSERVERCLASSPATH, ...)`,
+  then `Runtime.loadLibrary0(cls, "android_servers")` to register the JNI methods (same as scrcpy).
 
-### 2.3 保持唤醒与屏幕超时
+### 2.3 Keeping awake and the screen timeout
 
-- `CarPlayService` 已经在会话期持 `PARTIAL_WAKE_LOCK` + WiFi 低延迟锁，不需要新增；
-- `ScreenDimmer` 已在会话期间把 `screen_off_timeout` 设为最大值、结束时恢复，
-  所以框架不会自己触发熄屏（否则组状态变化会把面板重新点亮）。
+- `CarPlayService` already holds a `PARTIAL_WAKE_LOCK` + WiFi low-latency lock during the session, nothing new needed;
+- `ScreenDimmer` already sets `screen_off_timeout` to the maximum during the session and restores it at the end,
+  so the framework won't trigger screen-off on its own (otherwise the group state change would turn the panel back on).
 
-## 3. 时序
+## 3. Sequence
 
 ```
-推流开始（虚拟屏已建好）
-  → 若「连接时真息屏」关闭：只留暗幕，跳过以下步骤
-  → 若手机在休眠：input keyevent KEYCODE_WAKEUP → 等 400ms → wm dismiss-keyguard（尽力）
-  → setPhysicalScreenPower(false)        // 面板断电
+Streaming starts (virtual displays already created)
+  → if "True screen-off when connected" is off: keep only the dim overlay, skip the steps below
+  → if the phone is asleep: input keyevent KEYCODE_WAKEUP → wait 400ms → wm dismiss-keyguard (best effort)
+  → setPhysicalScreenPower(false)        // panel power off
   → phoneScreenOff = true
 
-车机侧断开（VideoSender.onEnded）
-  → restorePhoneScreen(sleep=true)       // 保持面板黑，直接 KEYCODE_SLEEP
-用户手动断开 / 会话退役（retireSession）
-  → restorePhoneScreen(sleep=false)      // 面板点亮（人就在手机前）
+Head unit side disconnects (VideoSender.onEnded)
+  → restorePhoneScreen(sleep=true)       // keep the panel black, send KEYCODE_SLEEP directly
+User disconnects manually / session retired (retireSession)
+  → restorePhoneScreen(sleep=false)      // panel turned back on (the user is at the phone)
 ```
 
-## 3.1 设置开关
+## 3.1 Settings toggle
 
-**设置 → 显示 → 连接时真息屏（开/关，默认关，2026-10-24 用户要求）**，持久化在
-`DisplayPrefs.screenOffOnConnect`（`settings` 共享偏好，键 `screen_off_on_connect`）。
+**Settings → Display → True screen-off when connected (on/off, default off, per user request 2026-10-24)**, persisted in
+`DisplayPrefs.screenOffOnConnect` (`settings` shared prefs, key `screen_off_on_connect`).
 
-### 3.2 触摸检测由暗幕承载（2026-10-24 用户实测定谳）
+### 3.2 Touch detection is handled by the dim overlay (settled by user testing 2026-10-24)
 
-面板断电后**触摸 IC 仍然工作**（荣耀 Magic7 实测：黑屏下点击设置按钮，触摸直达
-UI 并程序化点亮）。因此自动路径不走裸断电，而是复用暗幕的手动假息屏全流程
-（`ScreenDimmer.enterDimNow`）：上暗幕 → 断面板电 → **点暗幕即唤醒**
-（onUserInteraction → 恢复供电 + 撤暗幕）。暗幕同时是**口袋误触盾**——没有它，
-兜里触摸会点到前台应用（如「断开连接」）。按电源键仍会触发真休眠（Keyguard/
-表面剥离不稳，2026-10-24 实测车机冻结），正确姿势是点暗幕唤醒、别按电源键。
-暗幕不可用（缺悬浮窗权限）时降级裸断电——无触摸唤醒手段，只能按电源键。
+After the panel powers off, **the touch IC still works** (tested on Honor Magic7: tapping the settings button on a black screen, the touch reaches
+the UI and turns the screen on programmatically). So the automatic path doesn't use a bare power-off, but reuses the full manual fake screen-off flow of the dim overlay
+(`ScreenDimmer.enterDimNow`): show dim overlay → cut panel power → **tap the overlay to wake**
+(onUserInteraction → restore power + remove overlay). The overlay also acts as a **pocket-touch shield** — without it,
+touches in the pocket would hit the foreground app (e.g. "Disconnect"). Pressing the power button still triggers real sleep (Keyguard/
+surface detachment is unreliable; tested 2026-10-24, head unit froze); the right way is to tap the overlay to wake, not press the power button.
+When the overlay is unavailable (no overlay permission) we fall back to a bare power-off — with no touch wake-up, only the power button works.
 
-- 关掉后：会话建立时不再断电面板，只保留原有的 45s 暗幕 + 常亮；
-- **切换立即生效**（`SessionController.applyScreenOffPreference`）：面板黑着时也能在
-  **车机屏**的设置面板里关掉它，手机会立刻亮回来，不必等下次连接；
-- 没有会话时切换不会触发任何操作。
+- When off: the panel is no longer powered off at session setup; only the existing 45s dim overlay + keep-awake remain;
+- **Toggling takes effect immediately** (`SessionController.applyScreenOffPreference`): even with the panel black you can turn it off in the
+  settings panel on the **head unit screen**, and the phone lights up right away instead of waiting for the next connection;
+- Toggling without an active session does nothing.
 
-## 4. 已知限制（都不是 bug，是这套机制的固有代价）
+## 4. Known limitations (none are bugs; they're the inherent cost of this mechanism)
 
-1. **电源键要按两次才亮**：框架以为屏幕是亮的，第一次按电源键是「关屏」，第二次才是「亮屏」。
-   这是 scrcpy 同款行为；真变砖的风险不存在。
-2. **安全锁（PIN/图案）无法解锁**：`wm dismiss-keyguard` 对安全锁无效。虚拟屏靠
-   `ALWAYS_UNLOCKED` 不受 Keyguard 影响；但手机上打开 App/接电话仍需手动解锁。
-3. **应用侧回退屏（EMUI 等）不保证**：回退屏没有独立显示组，息屏后是否继续出帧取决于 ROM，
-   日志里会看到 `SCREEN: 物理屏已断电` 但车机画面可能停住——这类 ROM 建议关掉本功能。
-4. **进程异常退出**：UserService 是常驻 shell 进程，它的电源状态不随应用进程消失。
-   兜底有三层：会话结束恢复、服务过期自尽前恢复、应用下次启动恢复一次。
-5. **部分 ROM 不给 shell `ADD_ALWAYS_UNLOCKED_DISPLAY`**：日志里会出现
-   `带 ALWAYS_UNLOCKED 失败——降级为独立组`，功能仍可用，只是锁屏时虚拟屏可能出现锁屏界面。
+1. **The power button needs two presses to light up**: the framework thinks the screen is on, so the first press is "screen off" and the second is "screen on".
+   This is the same behaviour as scrcpy; there's no risk of actually bricking anything.
+2. **Secure locks (PIN/pattern) can't be dismissed**: `wm dismiss-keyguard` doesn't work on secure locks. Virtual displays are unaffected by Keyguard thanks to
+   `ALWAYS_UNLOCKED`; but opening apps/answering calls on the phone still requires unlocking manually.
+3. **App-side fallback displays (EMUI etc.) are not guaranteed**: fallback displays have no own display group, so whether frames keep coming after screen-off depends on the ROM;
+   the log will show `SCREEN: Physical screen powered off` but the head unit image may freeze — on such ROMs we recommend turning this feature off.
+4. **Abnormal process exit**: UserService is a long-lived shell process; its power state doesn't vanish with the app process.
+   There are three fallback layers: restore at session end, restore before the expired service kills itself, and restore once at the next app launch.
+5. **Some ROMs don't grant shell `ADD_ALWAYS_UNLOCKED_DISPLAY`**: the log will show
+   `ALWAYS_UNLOCKED failed — falling back to own group`; the feature still works, but the virtual displays may show the lock screen when locked.
 
-## 5. 排查
+## 5. Troubleshooting
 
-shell 进程的日志在 `/data/local/tmp/carinput_svc.log`：
+The shell process log is at `/data/local/tmp/carinput_svc.log`:
 
 ```
-createDisplay(CarPlayApp) 受信+独立组+ALWAYS_UNLOCKED flags=0xc48
-createDisplay(CarPlayApp) 受信+独立组 flags=0xc08
-DisplayControl 已就绪
+createDisplay(CarPlayApp) trusted+own group+ALWAYS_UNLOCKED flags=0xc48
+createDisplay(CarPlayApp) trusted+own group flags=0xc08
+DisplayControl ready
 setPhysicalScreenPower(false) ok=true
 setPhysicalScreenPower(true) ok=true
 ```
 
-应用侧（`files/main_debug.log`）：
+App side (`files/main_debug.log`):
 
 ```
-SCREEN: 物理屏已断电（真息屏；系统保持唤醒，虚拟屏照常渲染，按电源键两次可恢复）
-SCREEN: 物理屏断电失败（ROM 未给 shell 权限 / 取不到 display token）——继续用暗幕
-SCREEN: 车机侧断开——已让手机休眠（面板保持黑）
-SCREEN: 物理屏已恢复点亮 ok=true
+SCREEN: Physical screen powered off (true screen-off; system stays awake, virtual displays keep rendering, press power twice to recover)
+SCREEN: Failed to power off physical screen (ROM didn't grant shell permission / can't get display token) — continuing with dim overlay
+SCREEN: Head unit disconnected — phone put to sleep (panel stays black)
+SCREEN: Physical screen powered back on ok=true
 ```
 
-## 6. 如何回滚
+## 6. How to roll back
 
-1. **用户层面**：设置 → 显示 →「连接时真息屏」切到「关」（立即生效，只保留暗幕）；
-2. 若要连 flags 一起回滚：删掉 `CarInputServiceImpl.createDisplay` 里的
-   `FLAG_OWN_DISPLAY_GROUP or FLAG_ALWAYS_UNLOCKED`（第一级尝试），降级链会自动走基础 flags。
+1. **User level**: Settings → Display → set "True screen-off when connected" to "Off" (takes effect immediately, keeps only the dim overlay);
+2. To roll back the flags as well: remove
+   `FLAG_OWN_DISPLAY_GROUP or FLAG_ALWAYS_UNLOCKED` (the first-level attempt) from `CarInputServiceImpl.createDisplay`; the fallback chain will then use the basic flags automatically.

@@ -139,11 +139,11 @@ class CarPlayCtrlAdvertiser(
             sameNetwork &&
             SystemClock.uptimeMillis() - registeredAtMillis < FORCE_COOLDOWN_MILLIS
         ) {
-            log("$TAG: 跳过重复的强制重注册（${SystemClock.uptimeMillis() - registeredAtMillis}ms 前刚注册）")
+            log("$TAG: skipping duplicate forced re-register (registered ${SystemClock.uptimeMillis() - registeredAtMillis}ms ago)")
             return true
         }
         if (registered) {
-            log("$TAG: 重新注册 mDNS 广播（${registeredSsid ?: "?"}${if (force) "，绑定后时机修正" else " → $ssid"}）")
+            log("$TAG: re-registering mDNS advert (${registeredSsid ?: "?"}${if (force) ", post-bind timing fix" else " → $ssid"})")
             // 只注销服务、**保留监听端口**：Android NSD 没有 catplay/JmDNS 的
             // reannounce()，重发公告只能注销+重注册；若同时换端口，车机按缓存端口
             // 探测就会连到已关闭的 socket（xcertplay 车机侧每会话 7 次 ×1.5s 探测，
@@ -186,7 +186,14 @@ class CarPlayCtrlAdvertiser(
             var mac = DeviceIdentity.bluetoothMac(context)
             if (mac == DeviceIdentity.PLACEHOLDER_MAC) {
                 mac = DeviceIdentity.bluetoothMac(context, forceRetry = true)
-                log("$TAG: 蓝牙 MAC 解析为占位值，已强制重试${if (mac == DeviceIdentity.PLACEHOLDER_MAC) "（仍未成功——车机可能不会邀请，请确认 Shizuku 已启动）" else "成功"}")
+                log(
+                    "$TAG: Bluetooth MAC resolved to placeholder, forced retry " +
+                        if (mac == DeviceIdentity.PLACEHOLDER_MAC) {
+                            "still failed - head unit may not invite, make sure Shizuku is running"
+                        } else {
+                            "succeeded"
+                        },
+                )
             }
             val info =
                 NsdServiceInfo().apply {
@@ -210,9 +217,9 @@ class CarPlayCtrlAdvertiser(
             // 直接导致「不发 ctrl 探测、0x4301 永不到达」，而此前日志完全看不到它们
             // （2026-10-19 奥迪 0.1.7 排查时无法归因），故每次注册都打一行。
             log(
-                "$TAG: 已监听 :${socket.localPort}，广播 $SERVICE_TYPE " +
+                "$TAG: listening on :${socket.localPort}, advertising $SERVICE_TYPE " +
                     "name=$SERVICE_NAME id=$mac srcvers=$SENDER_SRCVERS" +
-                    if (mac == DeviceIdentity.PLACEHOLDER_MAC) "（⚠ 占位 MAC：车机不会邀请）" else "",
+                    if (mac == DeviceIdentity.PLACEHOLDER_MAC) " (⚠ placeholder MAC: head unit won't invite)" else "",
             )
             if (mac == DeviceIdentity.PLACEHOLDER_MAC) {
                 // 占位 id 车机不会邀请：后台等 Shizuku/MAC 就绪后立刻重注册，
@@ -221,7 +228,7 @@ class CarPlayCtrlAdvertiser(
             }
             true
         } catch (error: Exception) {
-            log("$TAG: 启动失败 - ${error.message}")
+            log("$TAG: start failed - ${error.message}")
             false
         }
     }
@@ -237,11 +244,14 @@ class CarPlayCtrlAdvertiser(
             if (!registered || !macPlaceholder) return
             val mac = DeviceIdentity.bluetoothMac(context, forceRetry = true)
             if (mac == DeviceIdentity.PLACEHOLDER_MAC) return@repeat
-            log("$TAG: 蓝牙 MAC 已解析为 $mac——重新注册 ctrl 广播（修复占位 id）")
+            log("$TAG: Bluetooth MAC resolved to $mac - re-registering ctrl advert (fixing placeholder id)")
             ensureForNetwork(registeredSsid ?: "", force = true)
             return
         }
-        log("$TAG: 30s 内未能解析真实蓝牙 MAC——ctrl 广播 id 仍是占位值，车机可能不会邀请（请确认 Shizuku 已启动）")
+        log(
+            "$TAG: couldn't resolve real Bluetooth MAC within 30s - ctrl advert id is still a placeholder, " +
+                "head unit may not invite (make sure Shizuku is running)",
+        )
     }
 
     private fun acceptLoop() {
@@ -264,7 +274,7 @@ class CarPlayCtrlAdvertiser(
             val input = BufferedInputStream(client.getInputStream())
             val head = readUntilHeaderEnd(input)
             if (head.isEmpty()) {
-                log("$TAG: $peer 连入但无请求（EOF）")
+                log("$TAG: $peer connected but sent no request (EOF)")
                 return
             }
             val requestLine = head.lineSequence().firstOrNull() ?: ""
@@ -287,19 +297,19 @@ class CarPlayCtrlAdvertiser(
                         }?.substringAfter(':')
                         ?.trim()
                 inviteCount++
-                log("$TAG: ✓ 车机 ctrl 邀请（第 $inviteCount 次，receiver=${receiverId ?: "?"}）——AirPlay 窗口已开启")
+                log("$TAG: ✓ head unit ctrl invite (#$inviteCount, receiver=${receiverId ?: "?"}) - AirPlay window open")
             }
 
             val output = client.getOutputStream()
             val response =
                 when {
                     requestLine.startsWith("GET /ctrl-int/") -> {
-                        log("$TAG: ✓ 应答 ctrl-int 探测 200 OK")
+                        log("$TAG: ✓ answered ctrl-int probe 200 OK")
                         "HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
                     }
 
                     else -> {
-                        log("$TAG: 未识别的请求，按 200 空应答处理（后续实现按需细化）")
+                        log("$TAG: unrecognized request, answering empty 200 (refine later as needed)")
                         "HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
                     }
                 }
@@ -322,15 +332,15 @@ class CarPlayCtrlAdvertiser(
             }
             if (rest.size() > 0) {
                 log(
-                    "$TAG: 应答后收到 ${rest.size()} 字节：" +
+                    "$TAG: received ${rest.size()} bytes after response: " +
                         rest.toByteArray().take(64).joinToString(" ") {
                             "%02x".format(it.toInt() and 0xFF)
                         },
                 )
             }
-            log("$TAG: $peer 连接结束")
+            log("$TAG: $peer connection closed")
         } catch (error: IOException) {
-            log("$TAG: $peer 连接异常 - ${error.message}")
+            log("$TAG: $peer connection error - ${error.message}")
         } finally {
             runCatching { client.close() }
         }
@@ -371,14 +381,14 @@ class CarPlayCtrlAdvertiser(
         acceptRunning = false
         runCatching { serverSocket?.close() }
         serverSocket = null
-        log("$TAG: 已停止")
+        log("$TAG: stopped")
     }
 
     /** 每次注册新建 listener（见 start() 注释；复用同一实例会触发 already in use）。 */
     private fun createListener(): NsdManager.RegistrationListener =
         object : NsdManager.RegistrationListener {
             override fun onServiceRegistered(serviceInfo: NsdServiceInfo) {
-                log("$TAG: mDNS 注册成功 ${serviceInfo.serviceName}")
+                log("$TAG: mDNS registered ${serviceInfo.serviceName}")
             }
 
             override fun onRegistrationFailed(
@@ -387,7 +397,7 @@ class CarPlayCtrlAdvertiser(
             ) {
                 // 重置状态：下一次 ensureForNetwork（新会话的 0x5703）会重新注册
                 registered = false
-                log("$TAG: mDNS 注册失败 code=$errorCode（下次会话自动重试）")
+                log("$TAG: mDNS registration failed code=$errorCode (retried automatically next session)")
             }
 
             override fun onServiceUnregistered(serviceInfo: NsdServiceInfo) = Unit

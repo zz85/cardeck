@@ -157,7 +157,7 @@ class Iap2BluetoothClient(
     fun start(): Boolean {
         if (running) return true
         if (!hasPermission()) {
-            log("BT-C: 缺少 BLUETOOTH_CONNECT 权限")
+            log("BT-C: missing BLUETOOTH_CONNECT permission")
             return false
         }
         val adapter =
@@ -167,7 +167,7 @@ class Iap2BluetoothClient(
                 null
             }
         if (adapter == null || !adapter.isEnabled) {
-            log("BT-C: 蓝牙不可用或未开启")
+            log("BT-C: Bluetooth unavailable or off")
             return false
         }
         // 每轮启动重置 SDP 结论与跳过日志（新配对/换固件后重新探测）
@@ -177,11 +177,11 @@ class Iap2BluetoothClient(
         val myGeneration = generation.incrementAndGet()
         val target = targetProvider()
         log(
-            "BT-C: 启动——将主动连入车机的无线 iAP2 服务（…caff）" +
+            "BT-C: starting - will connect to the head unit's wireless iAP2 service (...caff)" +
                 if (target != null) {
-                    "，目标：「${target.name}」${target.address}（只连该设备）"
+                    ", target: \"${target.name}\" ${target.address} (this device only)"
                 } else {
-                    "（未指定目标：依次尝试全部候选设备，可在「连接准备」中指定）"
+                    " (no target set: trying all candidates in turn, set one in \"Connection checklist\")"
                 },
         )
         Thread({ connectLoop(myGeneration) }, "iap2-bt-client").apply {
@@ -213,7 +213,7 @@ class Iap2BluetoothClient(
             }
             val candidates = candidateDevices(adapter)
             if (candidates.isEmpty()) {
-                log("BT-C: 没有已配对的蓝牙设备——请先在系统设置里与车机完成蓝牙配对")
+                log("BT-C: no paired Bluetooth devices - pair with the head unit in system settings first")
                 sleepQuietly(RETRY_DELAY_MILLIS * 3)
                 continue
             }
@@ -233,7 +233,7 @@ class Iap2BluetoothClient(
                 // 的设备不过闸（用户显式指定，保持原路径与时序）。
                 if (targetProvider() == null && !awaitIap2Service(device)) {
                     if (skippedNoService.add(device.address)) {
-                        log("BT-C: 跳过「$name」（未发现 iAP2 服务——非 CarPlay 设备，保持其音频连接）")
+                        log("BT-C: skipping \"$name\" (no iAP2 service found - not a CarPlay device, keeping its audio connection)")
                     }
                     continue
                 }
@@ -249,23 +249,23 @@ class Iap2BluetoothClient(
                             lastProfileLogAt = now
                             val left = BtProfiles.stillConnected(context, device.address)
                             log(
-                                "BT-C: $name 处于蓝牙已连接状态（${dropped.joinToString("/")}）——已断开" +
-                                    if (left.isEmpty()) "" else "（仍有 ${left.joinToString("/")} 在线）",
+                                "BT-C: $name was Bluetooth-connected (${dropped.joinToString("/")}) - disconnected" +
+                                    if (left.isEmpty()) "" else " (${left.joinToString("/")} still online)",
                             )
-                            log("BT-C: 车机在「蓝牙已连接」状态下不接受 CarPlay——保持仅配对")
+                            log("BT-C: head unit rejects CarPlay while \"Bluetooth connected\" - keeping paired only")
                         }
                     }
                 }
                 val socket = tryConnect(device)
                 if (socket != null) {
-                    log("BT-C: ✓ 已连入 $name 的无线 iAP2 服务（RFCOMM 建立）")
+                    log("BT-C: ✓ connected to $name's wireless iAP2 service (RFCOMM established)")
                     connected = socket
                     break
                 } else {
                     val now = android.os.SystemClock.uptimeMillis()
                     if (now - lastFailureLogAt > FAILURE_LOG_THROTTLE_MILLIS) {
                         lastFailureLogAt = now
-                        log("BT-C: 连接 $name 失败（车机未就绪或不在无线配对窗口），3 秒后重试…")
+                        log("BT-C: connecting to $name failed (head unit not ready or not in wireless pairing window), retrying in 3s...")
                     }
                 }
             }
@@ -281,7 +281,7 @@ class Iap2BluetoothClient(
             runSession(connected)
             sleepQuietly(RETRY_DELAY_MILLIS)
         }
-        log("BT-C: 客户端已停止")
+        log("BT-C: client stopped")
     }
 
     /**
@@ -306,8 +306,8 @@ class Iap2BluetoothClient(
                 if (now - lastTargetMissingLogAt > FAILURE_LOG_THROTTLE_MILLIS) {
                     lastTargetMissingLogAt = now
                     log(
-                        "BT-C: 目标设备「${target.name}」(${target.address}) 不在已配对列表" +
-                            "——请到系统蓝牙设置完成配对，或在「连接准备」改选目标",
+                        "BT-C: target device \"${target.name}\" (${target.address}) is not in the paired list" +
+                            " - pair it in system Bluetooth settings, or pick another target in \"Connection checklist\"",
                     )
                 }
                 return emptyList()
@@ -362,13 +362,13 @@ class Iap2BluetoothClient(
                 onGeneration,
             )
         } catch (error: IOException) {
-            log("BT-C: SESSION 失败 - ${error.message}")
+            log("BT-C: SESSION failed - ${error.message}")
         } finally {
             activeChannel = null
             currentSocket.getAndSet(null)?.let { runCatching { it.close() } }
             runCatching { socket.close() }
             channel.close()
-            log("BT-C: 本轮会话结束（客户端仍在运行，将自动重连）")
+            log("BT-C: session round ended (client still running, will reconnect automatically)")
         }
     }
 
@@ -377,7 +377,7 @@ class Iap2BluetoothClient(
         activeChannel?.let { channel ->
             activeChannel = null
             channel.close()
-            log("BT-C: 已主动断开当前控制会话")
+            log("BT-C: closed current control session")
         }
         currentSocket.getAndSet(null)?.let { runCatching { it.close() } }
     }
@@ -390,7 +390,7 @@ class Iap2BluetoothClient(
         activeChannel?.let { runCatching { it.close() } }
         thread?.interrupt()
         thread = null
-        log("BT-C: 已停止")
+        log("BT-C: stopped")
     }
 
     private fun sleepQuietly(millis: Long) {

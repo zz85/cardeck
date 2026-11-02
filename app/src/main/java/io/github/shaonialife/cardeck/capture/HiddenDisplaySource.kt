@@ -18,7 +18,7 @@ class HiddenDisplaySource(
     private val context: Context,
     private val log: (String) -> Unit = {},
 ) : ScreenSource {
-    override val name: String = "隐形屏"
+    override val name: String = "Hidden display"
 
     /** 兼容字段：双屏架构下指向应用屏 displayId。 */
     var displayId: Int = -1
@@ -36,17 +36,17 @@ class HiddenDisplaySource(
             ShizukuGate.State.READY -> Unit
 
             ShizukuGate.State.NOT_INSTALLED -> {
-                log("SHIZUKU: 未安装 Shizuku App（shizuku.rikka.app）")
+                log("SHIZUKU: Shizuku app not installed (shizuku.rikka.app)")
                 return false
             }
 
             ShizukuGate.State.NOT_RUNNING -> {
-                log("SHIZUKU: 服务未运行——打开 Shizuku App 点「启动」（手机重启后需重新启动）")
+                log("SHIZUKU: service not running - open the Shizuku app and tap \"Start\" (needed again after phone reboot)")
                 return false
             }
 
             ShizukuGate.State.UNAUTHORIZED -> {
-                log("SHIZUKU: 未授权本应用——已发起授权请求，请在弹窗中点「允许」后重连")
+                log("SHIZUKU: app not authorized - permission requested; tap \"Allow\" in the dialog, then reconnect")
                 ShizukuGate.requestPermission()
                 return false
             }
@@ -58,8 +58,8 @@ class HiddenDisplaySource(
         val svc = CarInputClient.awaitReady(context, USER_SERVICE_WAIT_MS)
         if (svc == null) {
             log(
-                "SHIZUKU: UserService 在 ${USER_SERVICE_WAIT_MS}ms 内未就绪" +
-                    "——将回退应用侧 PUBLIC 屏（触摸可能不可用，请检查 Shizuku 是否被系统冻结）",
+                "SHIZUKU: UserService not ready within ${USER_SERVICE_WAIT_MS}ms" +
+                    " - falling back to app-side PUBLIC display (touch may not work; check if Shizuku was frozen by the system)",
             )
         }
         // 双屏启动器：GL 合成器（dock 屏 + 应用屏）→ 编码 Surface

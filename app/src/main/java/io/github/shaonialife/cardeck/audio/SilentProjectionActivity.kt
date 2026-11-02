@@ -48,7 +48,7 @@ class SilentProjectionActivity : Activity() {
         if (grant != null) {
             future.complete(grant)
         } else {
-            future.completeExceptionally(IllegalStateException(error ?: "未知原因"))
+            future.completeExceptionally(IllegalStateException(error ?: "unknown reason"))
         }
     }
 
@@ -72,7 +72,7 @@ class SilentProjectionActivity : Activity() {
             @Suppress("DEPRECATION")
             startActivityForResult(manager.createScreenCaptureIntent(), REQUEST_CODE)
         } catch (t: Throwable) {
-            complete(null, "createScreenCaptureIntent 失败：$t")
+            complete(null, "createScreenCaptureIntent failed: $t")
             finishSilently()
         }
     }
@@ -88,14 +88,14 @@ class SilentProjectionActivity : Activity() {
         if (resultCode == RESULT_OK && data != null) {
             complete(Grant(resultCode, data), null)
         } else {
-            complete(null, "授权被拒 resultCode=$resultCode")
+            complete(null, "permission denied resultCode=$resultCode")
         }
         finishSilently()
     }
 
     override fun onDestroy() {
         // 没拿到结果就被销毁（用户取消/被系统回收）：让等待方立刻失败，而不是等满超时
-        complete(null, "Activity 在返回结果前被销毁")
+        complete(null, "Activity destroyed before returning a result")
         super.onDestroy()
     }
 
@@ -122,19 +122,19 @@ class SilentProjectionActivity : Activity() {
         ): Grant? {
             val app = context.applicationContext
             val future = CompletableFuture<Grant>()
-            pending.getAndSet(future)?.completeExceptionally(IllegalStateException("被新的请求覆盖"))
+            pending.getAndSet(future)?.completeExceptionally(IllegalStateException("superseded by a newer request"))
             val pkg = app.packageName
             // 1) 放行投屏：SystemUI 见到 PROJECT_MEDIA=allow 会直接返回 RESULT_OK，不弹窗
             Shell.exec("appops set $pkg PROJECT_MEDIA allow", 5_000L)
             // 2) 没有悬浮窗权限时，后台拉起 Activity / 前台服务都会被拦；暗幕本来也需要它
             if (!Settings.canDrawOverlays(app)) {
                 val r = Shell.exec("appops set $pkg SYSTEM_ALERT_WINDOW allow", 5_000L)
-                DebugFileLog.append(app, "PROJ: 补授「显示在其他应用上层」ok=${r.ok}（${r.output.take(60)}）")
+                DebugFileLog.append(app, "PROJ: granted \"display over other apps\" ok=${r.ok} (${r.output.take(60)})")
             }
             // 3) 录音权限（AudioPlaybackCapture 需要）：没授过就顺手补上
             if (app.checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
                 val r = Shell.exec("appops set $pkg RECORD_AUDIO allow", 5_000L)
-                DebugFileLog.append(app, "PROJ: 补授录音权限 ok=${r.ok}（${r.output.take(60)}）")
+                DebugFileLog.append(app, "PROJ: granted record audio permission ok=${r.ok} (${r.output.take(60)})")
             }
             // 4) 用 shell am start 绕过后台启动 Activity 限制；失败再退回应用内启动
             val component = "$pkg/${SilentProjectionActivity::class.java.name}"
@@ -142,7 +142,7 @@ class SilentProjectionActivity : Activity() {
             if (!viaShell.ok) {
                 DebugFileLog.append(
                     app,
-                    "PROJ: am start 失败（exit=${viaShell.exitCode} ${viaShell.output.take(80)}）——改用应用内 startActivity",
+                    "PROJ: am start failed (exit=${viaShell.exitCode} ${viaShell.output.take(80)}) - falling back to in-app startActivity",
                 )
                 runCatching {
                     app.startActivity(
@@ -150,13 +150,13 @@ class SilentProjectionActivity : Activity() {
                             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_NO_ANIMATION),
                     )
                 }.onFailure {
-                    DebugFileLog.append(app, "PROJ: 应用内 startActivity 也失败（${it.javaClass.simpleName}: ${it.message}）")
+                    DebugFileLog.append(app, "PROJ: in-app startActivity also failed (${it.javaClass.simpleName}: ${it.message})")
                 }
             }
             return try {
                 future.get(timeoutMs, TimeUnit.MILLISECONDS)
             } catch (t: Throwable) {
-                DebugFileLog.append(app, "PROJ: 静默领取投屏令牌失败（${t.javaClass.simpleName}: ${t.message}）")
+                DebugFileLog.append(app, "PROJ: silently obtaining projection token failed (${t.javaClass.simpleName}: ${t.message})")
                 null
             } finally {
                 pending.compareAndSet(future, null)

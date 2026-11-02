@@ -33,7 +33,7 @@ class ConsumerKeysTest {
     @Test
     fun descriptorParsedAsArrayWithNineUsages() {
         val map = ConsumerKeys.parseDescriptor(audiDescriptor)
-        assertNotNull("应能解析出 Consumer 映射", map)
+        assertNotNull("should parse a Consumer mapping", map)
         assertEquals(true, map!!.isArray)
         assertEquals(9, map.usages.size)
         // 顺序必须与描述符声明一致（下标语义依赖它）
@@ -115,8 +115,8 @@ class ConsumerKeysTest {
     fun allDescriptorUsagesNamed() {
         listOf(0xB0, 0xB1, 0xB3, 0xB4, 0xB5, 0xB6, 0xB9, 0xBC).forEach { usage ->
             assertFalse(
-                "usage=0x%02x 应可读".format(usage),
-                ConsumerKeys.nameOf(usage).startsWith("未知"),
+                "usage=0x%02x should be readable".format(usage),
+                ConsumerKeys.nameOf(usage).startsWith("Unknown"),
             )
         }
     }
@@ -135,7 +135,7 @@ class ConsumerKeysTest {
     @Test
     fun hondaDescriptorIsBitmapWithFiveUsages() {
         val map = ConsumerKeys.parseDescriptor(hondaDescriptor)!!
-        assertFalse("`81 02` 是位图报告，不是 Array", map.isArray)
+        assertFalse("`81 02` is a bitmap report, not Array", map.isArray)
         assertEquals(listOf(0xB0, 0xB1, 0xB5, 0xB6, 0xB9), map.usages)
     }
 

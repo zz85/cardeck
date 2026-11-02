@@ -28,8 +28,8 @@ object LogExporter {
         val label: String,
         val fileNameTag: String,
     ) {
-        CURRENT_SESSION("仅本次启动", ""),
-        ALL("全部历史日志", "-all"),
+        CURRENT_SESSION("This session only", ""),
+        ALL("All log history", "-all"),
     }
 
     data class Result(
@@ -70,7 +70,7 @@ object LogExporter {
         return try {
             val bytes = body.toByteArray(Charsets.UTF_8)
             resolver.openOutputStream(uri)?.use { it.write(bytes) }
-                ?: throw IllegalStateException("openOutputStream 返回 null")
+                ?: throw IllegalStateException("openOutputStream returned null")
             resolver.update(uri, ContentValues().apply { put(MediaStore.MediaColumns.IS_PENDING, 0) }, null, null)
             Result(uri, fileName, "$DISPLAY_ROOT/$RELATIVE_DIR/$fileName", bytes.size.toLong(), scope)
         } catch (_: Exception) {
@@ -86,27 +86,27 @@ object LogExporter {
         scope: Scope,
     ): String =
         buildString {
-            appendLine("CarDeck 运行日志")
-            appendLine("导出时间: " + SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date()))
-            appendLine("应用版本: " + versionName(context))
-            appendLine("导出范围: " + scope.label)
+            appendLine("CarDeck runtime log")
+            appendLine("Exported at: " + SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date()))
+            appendLine("App version: " + versionName(context))
+            appendLine("Export scope: " + scope.label)
             appendLine(
-                "设备: ${Build.MANUFACTURER} ${Build.MODEL} | " +
+                "Device: ${Build.MANUFACTURER} ${Build.MODEL} | " +
                     "Android ${Build.VERSION.RELEASE} (SDK ${Build.VERSION.SDK_INT})",
             )
             appendLine("==================================================")
             val fileLog = DebugFileLog.read(context, currentSessionOnly = scope == Scope.CURRENT_SESSION)
             if (!fileLog.isNullOrBlank()) {
                 if (scope == Scope.CURRENT_SESSION) {
-                    appendLine("（仅本次进程启动之后的日志；需要历史请点「导出全部」）")
+                    appendLine("(Only logs since this process started; long-press Export for full history)")
                 } else {
-                    appendLine("（全部文件日志；文件最多 2MB，超出时系统只保留最近一段）")
+                    appendLine("(All file logs; file is capped at 2MB, only the most recent part is kept)")
                 }
                 append(fileLog)
                 if (!fileLog.endsWith('\n')) appendLine()
             } else {
                 // 启动标记刚写、其余日志还没落盘（或文件不可读）时，界面缓冲仍是有效来源
-                appendLine("（文件日志不可用——导出界面缓冲，可能不完整）")
+                appendLine("(File log unavailable - exporting UI buffer, may be incomplete)")
                 append(fallbackText)
             }
         }

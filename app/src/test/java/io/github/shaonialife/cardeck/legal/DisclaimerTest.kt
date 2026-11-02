@@ -49,7 +49,7 @@ class DisclaimerHintTest {
     fun hintsExplainWhyAcceptIsBlocked() {
         // 两者都没满足：提示同时给出倒计时与滑动要求
         assertEquals(
-            "请滑动阅读至底部，并等待 7 秒",
+            "Scroll to the bottom and wait 7s",
             disclaimerBlockReason(
                 countdownDone = false,
                 contentScrollable = true,
@@ -59,7 +59,7 @@ class DisclaimerHintTest {
         )
         // 只有倒计时
         assertEquals(
-            "请等待 3 秒后接受",
+            "Wait 3s to accept",
             disclaimerBlockReason(
                 countdownDone = false,
                 contentScrollable = false,
@@ -69,7 +69,7 @@ class DisclaimerHintTest {
         )
         // 只有滚动
         assertEquals(
-            "请滑动阅读至底部",
+            "Scroll to the bottom to accept",
             disclaimerBlockReason(
                 countdownDone = true,
                 contentScrollable = true,
@@ -94,12 +94,12 @@ class DisclaimerContentTest {
     fun contentCoversMandatoryTopics() {
         val text = DisclaimerContent.sections.joinToString("\n") { it.title + "\n" + it.body }
         // 分享出去必须讲清的三类内容：测试范围、驾驶风险、系统权限
-        assertTrue(text.contains("已经测试过的组合只有"))
-        assertTrue(text.contains("驾驶安全"))
+        assertTrue(text.contains("The only combinations tested so far"))
+        assertTrue(text.contains("Driving safety"))
         assertTrue(text.contains("Shizuku"))
         // 非官方声明（避免被误认为与 Apple 有关联）
-        assertTrue(text.contains("非官方"))
-        assertTrue(text.contains("商标"))
+        assertTrue(text.contains("unofficial"))
+        assertTrue(text.contains("trademark"))
     }
 
     @Test

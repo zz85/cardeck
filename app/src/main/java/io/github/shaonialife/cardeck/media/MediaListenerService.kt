@@ -288,7 +288,7 @@ object MediaSessionsState {
             VirtualLauncher.logSink?.invoke(
                 "MEDIA: " + (
                     value?.let { "${it.title ?: "?"} - ${it.artist ?: "?"} playing=${it.playing}" }
-                        ?: "无活跃会话"
+                        ?: "no active session"
                 ),
             )
         }

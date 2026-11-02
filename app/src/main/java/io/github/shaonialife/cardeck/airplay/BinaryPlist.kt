@@ -143,7 +143,7 @@ object BinaryPlist {
                     withLength(0xD0, refsToBytes(keyRefs + valueRefs, total), map.size)
                 }
 
-                else -> throw IllegalArgumentException("不支持的 plist 类型 ${value.javaClass.simpleName}")
+                else -> throw IllegalArgumentException("Unsupported plist type ${value.javaClass.simpleName}")
             }
         objects += bytes
         return objects.size - 1
@@ -256,13 +256,13 @@ object BinaryPlist {
         val first = runCatching { parse(bytes) }
         first.getOrNull()?.let { return ParseResult(it, null) }
         if (first.isSuccess) return ParseResult(null, null)
-        val failure = first.exceptionOrNull() ?: IllegalArgumentException("解析失败")
+        val failure = first.exceptionOrNull() ?: IllegalArgumentException("Parse failed")
         if (bytes.size >= 48) {
             for (trim in 1..8) {
                 if (bytes.size - trim < 40) break
                 val attempt = runCatching { parse(bytes.copyOfRange(0, bytes.size - trim)) }
                 if (attempt.isSuccess) {
-                    return ParseResult(attempt.getOrThrow(), "尾部多 $trim 字节（裁掉后解析成功）")
+                    return ParseResult(attempt.getOrThrow(), "$trim extra trailing bytes (parsed OK after trimming)")
                 }
             }
         }
@@ -271,11 +271,11 @@ object BinaryPlist {
     }
 
     fun parse(bytes: ByteArray): Any? {
-        if (bytes.size < 40) throw IllegalArgumentException("plist 太短（${bytes.size} 字节）")
+        if (bytes.size < 40) throw IllegalArgumentException("plist too short (${bytes.size} bytes)")
         val magic = "bplist00".toByteArray(Charsets.US_ASCII)
         if (!bytes.copyOfRange(0, 8).contentEquals(magic)) {
             throw IllegalArgumentException(
-                "不是 bplist00（首 8 字节 " + bytes.take(8).joinToString(" ") { "%02x".format(it) } + "）",
+                "Not bplist00 (first 8 bytes " + bytes.take(8).joinToString(" ") { "%02x".format(it) } + ")",
             )
         }
 
@@ -289,16 +289,16 @@ object BinaryPlist {
             "trailer{offsetIntSize=$offsetIntSize objectRefSize=$objectRefSize numObjects=$numObjects " +
                 "topObject=$topObject offsetTableOffset=$offsetTableOffset body=${bytes.size}B}"
         if (offsetIntSize !in 1..8 || objectRefSize !in 1..8) {
-            throw IllegalArgumentException("trailer 字段不合法 $trailer")
+            throw IllegalArgumentException("Invalid trailer fields $trailer")
         }
         if (numObjects <= 0 || numObjects > MAX_OBJECTS) {
-            throw IllegalArgumentException("对象数非法 $trailer")
+            throw IllegalArgumentException("Invalid object count $trailer")
         }
-        if (topObject >= numObjects) throw IllegalArgumentException("根对象下标越界 $trailer")
+        if (topObject >= numObjects) throw IllegalArgumentException("Root object index out of bounds $trailer")
         if (offsetTableOffset < 9 ||
             offsetTableOffset + numObjects * offsetIntSize > bytes.size - 32
         ) {
-            throw IllegalArgumentException("偏移表越界 $trailer")
+            throw IllegalArgumentException("Offset table out of bounds $trailer")
         }
 
         val count = numObjects.toInt()
@@ -312,11 +312,11 @@ object BinaryPlist {
         } catch (error: IllegalArgumentException) {
             throw error
         } catch (error: IndexOutOfBoundsException) {
-            throw IllegalArgumentException("读取越界（$trailer，${error.message}）")
+            throw IllegalArgumentException("Read out of bounds ($trailer, ${error.message})")
         } catch (error: NegativeArraySizeException) {
-            throw IllegalArgumentException("长度字段为负（$trailer）")
+            throw IllegalArgumentException("Negative length field ($trailer)")
         } catch (error: OutOfMemoryError) {
-            throw IllegalArgumentException("长度字段过大（$trailer）")
+            throw IllegalArgumentException("Length field too large ($trailer)")
         }
     }
 
@@ -419,16 +419,16 @@ object BinaryPlist {
     ): Pair<Int, Int> {
         if (info != 0xF) return info to offset + 1
         if (offset + 1 >= bytes.size) {
-            throw IllegalArgumentException("长度字节缺失（offset=$offset body=${bytes.size}B）")
+            throw IllegalArgumentException("Missing length byte (offset=$offset body=${bytes.size}B)")
         }
         val intMarker = u8(bytes[offset + 1])
         if (intMarker ushr 4 != 0x1) {
             throw IllegalArgumentException(
-                "期望长度 int 对象，得到 0x${intMarker.toString(16)}（offset=$offset " +
-                    "上下文=" +
+                "Expected length int object, got 0x${intMarker.toString(16)} (offset=$offset " +
+                    "context=" +
                     bytes
                         .copyOfRange(offset, minOf(offset + 8, bytes.size))
-                        .joinToString(" ") { "%02x".format(it) } + "）",
+                        .joinToString(" ") { "%02x".format(it) } + ")",
             )
         }
         val intSize = 1 shl (intMarker and 0xF)
@@ -437,7 +437,7 @@ object BinaryPlist {
         // 「无法识别」丢弃（2026-10-20 实测定位，与整数负号扩展是同一族 bug）
         val count = readUint(bytes, offset + 2, intSize)
         if (count < 0 || count > MAX_OBJECTS) {
-            throw IllegalArgumentException("长度字段非法（count=$count offset=$offset）")
+            throw IllegalArgumentException("Invalid length field (count=$count offset=$offset)")
         }
         return count.toInt() to offset + 2 + intSize
     }
@@ -449,11 +449,11 @@ object BinaryPlist {
         offset: Int,
         size: Int,
     ): Long {
-        if (size < 0 || size > 8) throw IllegalArgumentException("读取宽度非法（size=$size offset=$offset）")
+        if (size < 0 || size > 8) throw IllegalArgumentException("Invalid read width (size=$size offset=$offset)")
         if (offset < 0 || offset + size > bytes.size) {
             throw IllegalArgumentException(
-                "读取越界（offset=$offset size=$size body=${bytes.size}B）——" +
-                    "trailer 与报文实际长度不一致时会出现",
+                "Read out of bounds (offset=$offset size=$size body=${bytes.size}B) - " +
+                    "happens when the trailer disagrees with the actual body length",
             )
         }
         var value = 0L

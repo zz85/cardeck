@@ -21,9 +21,9 @@ class CarPlayCtrlAdvertiserTest {
     fun ctrlTxtKeepsValuesVerifiedOnAudi() {
         val srcvers = CarPlayCtrlAdvertiser.advertisedSrcversForTest()
         val name = CarPlayCtrlAdvertiser.advertisedServiceNameForTest()
-        assertEquals("车机按该版本号分支：改掉会连 ctrl 探测都不发", "950.7.1", srcvers)
-        assertEquals("0.1.6 起实测可用的实例名", "sender", name)
-        assertTrue("服务类型不得改动", CarPlayCtrlAdvertiser.SERVICE_TYPE == "_carplay-ctrl._tcp")
+        assertEquals("head unit branches on this version: changing it stops even ctrl probes", "950.7.1", srcvers)
+        assertEquals("instance name verified working since 0.1.6", "sender", name)
+        assertTrue("service type must not change", CarPlayCtrlAdvertiser.SERVICE_TYPE == "_carplay-ctrl._tcp")
     }
 
     @Test
@@ -31,7 +31,7 @@ class CarPlayCtrlAdvertiserTest {
         // _device-info._tcp 曾以 port=0 注册并必然失败（The port is missing）。
         // 若将来要恢复，必须先确认 NsdManager 接受合法端口且该车机确有此需求。
         assertTrue(
-            "不应再广播 _device-info._tcp",
+            "_device-info._tcp must no longer be advertised",
             !CarPlayCtrlAdvertiser.advertisedServiceTypesForTest().contains("_device-info._tcp"),
         )
     }

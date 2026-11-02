@@ -1,14 +1,14 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="en">
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
-<title>CarPlay 车机桌面 · 交互原型</title>
+<title>CarPlay Head Unit Launcher · Interactive Prototype</title>
 <!--
-  设计方向：CarPlay 真机保真 —— 纯黑画布、SF/苹方字体、克制动效；
-  设置页沿用 iOS「设置」列表气质（深色分组行 + 蓝色勾选）。
-  画布按真机流规格 1160×540（奥迪 MIB3），dock 为左侧 126px 独立屏。
-  交互：点「车机设置」→ 双栏设置页；勾选应用 → 实时出现在桌面；Esc / ⌂ 返回。
+  Design direction: faithful to real CarPlay — pure black canvas, SF/PingFang fonts, restrained motion;
+  the settings page follows the look of the iOS "Settings" list (dark grouped rows + blue checkmarks).
+  Canvas matches the real stream spec 1160×540 (Audi MIB3); the dock is a separate 126px display on the left.
+  Interaction: tap "Car Settings" → two-pane settings page; check an app → it appears on the launcher in real time; Esc / ⌂ to go back.
 -->
 <style>
 :root{
@@ -20,8 +20,8 @@
   --row: #121215;
   --row-hover: #1B1B1F;
   --row-active: #1C1C1F;
-  --accent: #0A84FF;          /* iOS 蓝：勾选框 */
-  --green: #34C759;           /* 电量 */
+  --accent: #0A84FF;          /* iOS blue: checkboxes */
+  --green: #34C759;           /* battery */
   --ease-out: cubic-bezier(.22,.61,.36,1);
   --ease-spring: cubic-bezier(.34,1.56,.64,1);
 }
@@ -40,7 +40,7 @@ body{
   border:1px solid #2A2A2F; border-radius:5px; padding:1px 6px;
 }
 
-/* ===================== 屏幕画布 ===================== */
+/* ===================== Screen canvas ===================== */
 .stage{
   position:relative; width:var(--w); height:var(--h);
   background:#000; border-radius:22px; overflow:hidden;
@@ -48,7 +48,7 @@ body{
   display:flex;
 }
 
-/* ===================== 左侧 dock（独立虚拟屏） ===================== */
+/* ===================== Left dock (separate virtual display) ===================== */
 .dock{
   flex:0 0 var(--dock-w); width:var(--dock-w);
   display:flex; flex-direction:column; align-items:center;
@@ -81,11 +81,11 @@ body{
 .dock-home svg{ width:40px; height:40px; }
 .dock-home:active{ transform:scale(.88); opacity:1; }
 
-/* ===================== 应用区（两块屏叠放：桌面 / 设置） ===================== */
+/* ===================== App area (two stacked screens: launcher / settings) ===================== */
 .app-area{ position:relative; flex:1; overflow:hidden; }
 .screen{ position:absolute; inset:0; }
 
-/* ---- 桌面 ---- */
+/* ---- Launcher ---- */
 #desktopScreen{ transition:transform .3s var(--ease-out), opacity .3s var(--ease-out); }
 #desktopScreen.pushed{ transform:translateX(-30px); opacity:.2; pointer-events:none; }
 .grid-pages{
@@ -120,7 +120,7 @@ body{
 .dot{ width:7px; height:7px; border-radius:50%; background:rgba(255,255,255,.32); transition:background .2s; }
 .dot.active{ background:#fff; }
 
-/* ---- 通用应用图标（squircle + 白色图形） ---- */
+/* ---- Generic app icon (squircle + white glyph) ---- */
 .app-icon{
   display:flex; align-items:center; justify-content:center; flex:0 0 auto;
   overflow:hidden; border-radius:22%;
@@ -128,7 +128,7 @@ body{
 }
 .app-icon svg{ width:76%; height:76%; display:block; }
 
-/* ---- 车机设置（双栏） ---- */
+/* ---- Car settings (two panes) ---- */
 #settingsScreen{
   display:flex; background:#000;
   transform:translateX(46px); opacity:0; pointer-events:none;
@@ -204,7 +204,7 @@ body{
 .app-row.checked .cb{ background:var(--accent); border-color:var(--accent); transform:scale(1.06); }
 .app-row.checked .cb path{ stroke-dashoffset:0; }
 
-/* ---- 轻提示 ---- */
+/* ---- Toast ---- */
 .toast{
   position:absolute; left:50%; bottom:56px; transform:translate(-50%, 8px);
   background:rgba(28,28,31,.94); color:#E5E5EA; font-size:13.5px;
@@ -220,16 +220,16 @@ body{
 </head>
 <body>
 
-<div class="caption"><b>CarPlay 车机桌面 · 交互原型</b> · 1160 × 540 · 奥迪 MIB3 投屏画布</div>
+<div class="caption"><b>CarPlay Head Unit Launcher · Interactive Prototype</b> · 1160 × 540 · Audi MIB3 projection canvas</div>
 
 <div class="stage">
-  <!-- dock（左侧独立屏）：时间（去秒）· 电量 · 运行中应用 · ⌂ -->
+  <!-- dock (separate display on the left): time (no seconds) · battery · running apps · ⌂ -->
   <div class="dock">
     <div class="dock-clock" id="clock">20:26</div>
     <div class="dock-batt"><span>⚡88%</span><div class="bar"><i></i></div></div>
     <div class="dock-apps" id="dockApps"></div>
     <div class="dock-divider"></div>
-    <button class="dock-home" id="dockHome" title="回到桌面">
+    <button class="dock-home" id="dockHome" title="Back to launcher">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
         <path d="M3.5 11.2 12 4.2l8.5 7"/>
         <path d="M5.6 9.6V19a1.6 1.6 0 0 0 1.6 1.6h9.6A1.6 1.6 0 0 0 18.4 19V9.6"/>
@@ -239,31 +239,31 @@ body{
   </div>
 
   <div class="app-area">
-    <!-- 桌面：4×3 分页网格 + 页点 -->
+    <!-- Launcher: 4×3 paged grid + page dots -->
     <section class="screen" id="desktopScreen">
       <div class="grid-pages" id="gridPages"></div>
       <div class="dots" id="dots"></div>
     </section>
 
-    <!-- 车机设置：双栏（左菜单 / 右内容） -->
+    <!-- Car settings: two panes (menu on the left / content on the right) -->
     <section class="screen" id="settingsScreen">
       <div class="settings-menu">
         <button class="back-btn" id="backBtn">
           <svg viewBox="0 0 16 16"><path d="M10 3 5 8l5 5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
-          桌面
+          Home
         </button>
-        <div class="menu-title">车机设置</div>
+        <div class="menu-title">CAR SETTINGS</div>
         <button class="menu-item active">
           <span class="mi-icon" id="menuIconGrid"></span>
-          管理桌面应用
+          Manage Apps
         </button>
       </div>
       <div class="settings-content">
         <div class="content-head">
-          <h2>管理桌面应用</h2>
-          <span class="count" id="selectedCount">已选 2 个</span>
+          <h2>Manage Apps</h2>
+          <span class="count" id="selectedCount">2 selected</span>
         </div>
-        <p class="content-sub">勾选的应用将显示在桌面；「车机设置」固定在第一格。</p>
+        <p class="content-sub">Checked apps appear on the launcher; "Car Settings" is pinned to the first slot.</p>
         <div class="app-list" id="appList"></div>
       </div>
     </section>
@@ -272,10 +272,10 @@ body{
   </div>
 </div>
 
-<div class="caption">点击「车机设置」进入设置页 · 勾选应用会实时出现在桌面 · <kbd>Esc</kbd> 返回桌面</div>
+<div class="caption">Tap "Car Settings" to open settings · checked apps appear on the launcher in real time · <kbd>Esc</kbd> back to launcher</div>
 
 <script>
-/* ===================== 图标（squircle 底 + 白色图形，离线自绘） ===================== */
+/* ===================== Icons (squircle background + white glyph, drawn offline) ===================== */
 const ICONS = {
   settings: { bg:'linear-gradient(180deg,#9A9AA0,#5E5E63)', glyph:`
     <g fill="#fff" transform="scale(2.6667)"><path d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z"/></g>` },
@@ -360,27 +360,27 @@ const ICONS = {
     </g>` },
 };
 
-/* ===================== 数据 ===================== */
+/* ===================== Data ===================== */
 const APPS = [
-  { id:'amap',     name:'高德地图' },
-  { id:'baidu',    name:'百度地图' },
-  { id:'tencent',  name:'腾讯地图' },
-  { id:'netease',  name:'网易云音乐' },
-  { id:'qqmusic',  name:'QQ音乐' },
-  { id:'kugou',    name:'酷狗音乐' },
-  { id:'ximalaya', name:'喜马拉雅' },
-  { id:'wechat',   name:'微信' },
-  { id:'phone',    name:'电话' },
-  { id:'weather',  name:'天气' },
-  { id:'clock',    name:'时钟' },
-  { id:'bilibili', name:'哔哩哔哩' },
-  { id:'browser',  name:'浏览器' },
-  { id:'calc',     name:'计算器' },
+  { id:'amap',     name:'Amap' },
+  { id:'baidu',    name:'Baidu Maps' },
+  { id:'tencent',  name:'Tencent Maps' },
+  { id:'netease',  name:'NetEase Music' },
+  { id:'qqmusic',  name:'QQ Music' },
+  { id:'kugou',    name:'Kugou Music' },
+  { id:'ximalaya', name:'Ximalaya' },
+  { id:'wechat',   name:'WeChat' },
+  { id:'phone',    name:'Phone' },
+  { id:'weather',  name:'Weather' },
+  { id:'clock',    name:'Clock' },
+  { id:'bilibili', name:'Bilibili' },
+  { id:'browser',  name:'Browser' },
+  { id:'calc',     name:'Calculator' },
 ];
-/* 默认勾选：地图类（真机上按已安装的地图应用自动选中） */
+/* Checked by default: map apps (on a real device, installed map apps are selected automatically) */
 const DEFAULT_SELECTED = ['amap', 'baidu'];
-/* 固定第一位：车机设置（不可取消） */
-const PINNED = { id:'settings', name:'车机设置', pinned:true };
+/* Pinned to the first slot: Car Settings (cannot be unchecked) */
+const PINNED = { id:'settings', name:'Car Settings', pinned:true };
 
 let selected = new Set(DEFAULT_SELECTED);
 
@@ -400,7 +400,7 @@ function toast(text){
   toastTimer = setTimeout(() => t.classList.remove('show'), 1300);
 }
 
-/* 时钟（无秒）：随分钟刷新 */
+/* Clock (no seconds): refreshes every minute */
 function tickClock(){
   const d = new Date();
   $('clock').textContent =
@@ -409,20 +409,20 @@ function tickClock(){
 tickClock();
 setInterval(tickClock, 15000);
 
-/* dock 运行中应用（原型示意：高德在运行） */
+/* dock running apps (prototype mock: Amap is running) */
 function renderDock(){
   const box = $('dockApps');
   box.innerHTML = '';
-  [{ id:'amap', name:'高德地图' }].forEach(app => {
+  [{ id:'amap', name:'Amap' }].forEach(app => {
     const el = document.createElement('span');
     el.innerHTML = iconHTML(app.id);
-    el.firstElementChild.title = app.name + '（运行中）';
-    el.firstElementChild.onclick = () => toast(`切换回「${app.name}」（原型示意）`);
+    el.firstElementChild.title = app.name + ' (running)';
+    el.firstElementChild.onclick = () => toast(`Switch back to "${app.name}" (prototype mock)`);
     box.appendChild(el.firstElementChild);
   });
 }
 
-/* ===================== 桌面网格 ===================== */
+/* ===================== Launcher grid ===================== */
 const PER_PAGE = 12;
 
 function desktopEntries(){
@@ -447,7 +447,7 @@ function renderDesktop(){
       cell.innerHTML = iconHTML(entry.id) + `<span class="label">${entry.name}</span>`;
       cell.onclick = () => {
         if (entry.pinned) openSettings();
-        else toast(`启动「${entry.name}」（原型示意）`);
+        else toast(`Launch "${entry.name}" (prototype mock)`);
       };
       pageEl.appendChild(cell);
     });
@@ -482,7 +482,7 @@ $('gridPages').addEventListener('scroll', () => {
   updateActiveDot(index);
 }, { passive:true });
 
-/* ===================== 设置页 ===================== */
+/* ===================== Settings page ===================== */
 function openSettings(){
   $('settingsScreen').classList.add('open');
   $('desktopScreen').classList.add('pushed');
@@ -506,10 +506,10 @@ function renderAppList(){
     row.onclick = () => {
       if (selected.has(app.id)){
         selected.delete(app.id);
-        toast(`「${app.name}」已从桌面移除`);
+        toast(`"${app.name}" removed from launcher`);
       } else {
         selected.add(app.id);
-        toast(`「${app.name}」已显示到桌面`);
+        toast(`"${app.name}" added to launcher`);
       }
       row.classList.toggle('checked', selected.has(app.id));
       row.setAttribute('aria-checked', selected.has(app.id) ? 'true' : 'false');
@@ -522,10 +522,10 @@ function renderAppList(){
 }
 
 function updateCount(){
-  $('selectedCount').textContent = `已选 ${selected.size} 个`;
+  $('selectedCount').textContent = `${selected.size} selected`;
 }
 
-/* ===================== 接线 ===================== */
+/* ===================== Wiring ===================== */
 $('backBtn').onclick = closeSettings;
 $('dockHome').onclick = () => { closeSettings(); };
 document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeSettings(); });
@@ -536,7 +536,7 @@ renderDock();
 renderDesktop();
 renderAppList();
 
-/* 截图/直达：?view=settings 直接打开设置页 */
+/* Screenshot/deep link: ?view=settings opens the settings page directly */
 if (new URLSearchParams(location.search).get('view') === 'settings'){
   openSettings();
 }

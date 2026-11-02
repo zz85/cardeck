@@ -24,7 +24,7 @@ class BtLinkReplayTest {
         val fixtures = CarFixture.loadDirectory()
         val usable = fixtures.filter { it.btRounds.isNotEmpty() }
         if (usable.isEmpty()) {
-            println("REPLAY: 无蓝牙 fixture（目录被 gitignore，本地用 tools/extract_car_fixtures.py 提取）——跳过")
+            println("REPLAY: no Bluetooth fixture (dir is gitignored; extract locally with tools/extract_car_fixtures.py) - skipping")
             return
         }
         val failures = ArrayList<String>()
@@ -35,7 +35,7 @@ class BtLinkReplayTest {
                 .take(2)
                 .forEach { round -> replayRound(fixture, round, failures) }
         }
-        assertTrue("蓝牙重放回归失败：\n" + failures.joinToString("\n"), failures.isEmpty())
+        assertTrue("Bluetooth replay regression failed:\n" + failures.joinToString("\n"), failures.isEmpty())
     }
 
     private fun replayRound(
@@ -76,7 +76,7 @@ class BtLinkReplayTest {
         val replayIds = distinctCsmIds(extractCsmPayloads(stream.written))
         val recordedIds = distinctCsmIds(extractCsmPayloads(listOf(round.recordedTx)))
         if (!finished) {
-            failures.add("$tag 会话未在录制时长+20s 内结束（回放 distinct=${replayIds.joinToString()}）")
+            failures.add("$tag session did not end within recording duration+20s (replay distinct=${replayIds.joinToString()})")
         }
         // 录制的 RAW 转储有字节预算（旧日志 512B）。分级断言：
         //  - 识别帧（0x1D01）完整幸存 → 录制 distinct 必须是回放的前缀（全量比对）
@@ -88,13 +88,13 @@ class BtLinkReplayTest {
                 replayIds.subList(0, expected.size) == expected
         if (!prefixOk) {
             failures.add(
-                "$tag CSM 应答序列漂移（${if (round.rxHasIdent) "全量" else "仅链路层"}断言）：\n" +
-                    "  期望=${expected.joinToString()}\n  回放=${replayIds.joinToString()}",
+                "$tag CSM response sequence drifted (${if (round.rxHasIdent) "full" else "link-layer-only"} assertion):\n" +
+                    "  expected=${expected.joinToString()}\n  replayed=${replayIds.joinToString()}",
             )
         } else {
             println(
-                "REPLAY ✓ $tag ${if (round.rxHasIdent) "全量" else "仅链路层"}前缀一致" +
-                    "（期望 ${expected.size}/回放 ${replayIds.size} 种消息）",
+                "REPLAY ✓ $tag ${if (round.rxHasIdent) "full" else "link-layer-only"} prefix matches" +
+                    " (expected ${expected.size}/replayed ${replayIds.size} message types)",
             )
         }
     }

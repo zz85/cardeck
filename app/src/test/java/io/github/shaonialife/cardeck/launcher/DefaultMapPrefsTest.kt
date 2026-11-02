@@ -111,9 +111,9 @@ class MapLaunchCandidatesTest {
     fun baiduCarEditionIsWhitelistedAheadOfPhoneMaps() {
         val priority = VirtualLauncher.MAP_PACKAGES_PRIORITY
         val auto = priority.indexOf("com.baidu.naviauto")
-        assertTrue("百度车机版必须在白名单里", auto >= 0)
+        assertTrue("Baidu car edition must be in the whitelist", auto >= 0)
         assertTrue(
-            "车机版应排在手机版之前（车机上优先用横屏适配好的车机版）",
+            "Car edition should rank before the phone app (prefer the landscape-optimised car edition on head units)",
             auto < priority.indexOf("com.baidu.BaiduMap"),
         )
         assertTrue(auto < priority.indexOf("com.autonavi.minimap"))

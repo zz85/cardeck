@@ -144,9 +144,9 @@ object AppOrientationCompat {
         // 诊断要能区分两种永久性成因（ChangeId 未注册 / user build 非 debuggable）
         diagSink?.invoke(
             "ORIENTATION: compat $action " +
-                (if (unsupported) "本机不支持" else "失败") +
+                (if (unsupported) "unsupported on this device" else "failed") +
                 " pkg=$pkg change=$CHANGE_UNDEFINED_TO_NOSENSOR exit=${first.exitCode} out=${first.output.take(160)}" +
-                if (unsupported) "（${describeUnsupported()}）" else "",
+                if (unsupported) " (${describeUnsupported()})" else "",
         )
         return if (unsupported) WriteResult.UNSUPPORTED else WriteResult.FAILED
     }
@@ -199,14 +199,14 @@ object AppOrientationCompat {
     private fun describeUnsupported(): String =
         when {
             Build.VERSION.SDK_INT < MIN_SUPPORTED_SDK ->
-                "Android ${Build.VERSION.RELEASE}（SDK ${Build.VERSION.SDK_INT}）低于 14" +
-                    "——这两个 ChangeId 自 Android 14 起才进平台"
+                "Android ${Build.VERSION.RELEASE} (SDK ${Build.VERSION.SDK_INT}) is below 14" +
+                    " - these two ChangeIds were only added to the platform in Android 14"
 
             !changeIdsRegistered() ->
-                "SDK ${Build.VERSION.SDK_INT} 但该 ROM 未注册这两个 ChangeId（疑似 OEM 裁剪）"
+                "SDK ${Build.VERSION.SDK_INT} but this ROM doesn't register these two ChangeIds (likely stripped by the OEM)"
 
             else ->
-                "ChangeId 已注册，但 user build 不允许修改非 debuggable 应用"
+                "ChangeIds registered, but the user build doesn't allow modifying non-debuggable apps"
         }
 
     /**
@@ -230,7 +230,7 @@ object AppOrientationCompat {
         val app = context.applicationContext
         executor.execute {
             val count = runCatching { applyAll(app) }.getOrDefault(0)
-            if (count > 0) log("ORIENTATION: 已为 $count 个应用启用强制横屏（会话期间生效）")
+            if (count > 0) log("ORIENTATION: forced landscape enabled for $count apps (active during the session)")
         }
     }
 
@@ -242,7 +242,7 @@ object AppOrientationCompat {
         val app = context.applicationContext
         executor.execute {
             val count = runCatching { resetAll(app) }.getOrDefault(0)
-            if (count > 0) log("ORIENTATION: 已复原 $count 个应用的显示设置")
+            if (count > 0) log("ORIENTATION: restored display settings for $count apps")
         }
     }
 
@@ -276,8 +276,8 @@ object AppOrientationCompat {
         // 成本约 30ms、结果进程内缓存。
         if (!changeIdsRegistered()) {
             diagSink?.invoke(
-                "ORIENTATION: 本机 ROM 未注册横屏兼容 ChangeId——跳过本次全部覆盖" +
-                    "（名单 ${pkgs.size} 个应用；该机型不支持强制横屏）",
+                "ORIENTATION: this ROM doesn't register the landscape compat ChangeIds - skipping all overrides this time" +
+                    " (${pkgs.size} apps listed; this device doesn't support forced landscape)",
             )
             return 0
         }
@@ -289,8 +289,8 @@ object AppOrientationCompat {
                 // 同样整体停止，不逐应用空跑。
                 if (isPermanentRejection(first.output)) {
                     diagSink?.invoke(
-                        "ORIENTATION: 系统限制——user 版本只允许修改可调试(debuggable)应用的" +
-                            "兼容设置，跳过本次全部横屏覆盖（名单 ${pkgs.size} 个应用）",
+                        "ORIENTATION: system restriction - user builds only allow changing compat settings of debuggable apps; " +
+                            "skipping all landscape overrides this time (${pkgs.size} apps listed)",
                     )
                     return 0
                 }

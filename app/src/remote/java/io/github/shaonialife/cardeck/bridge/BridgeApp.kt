@@ -20,17 +20,20 @@ class BridgeApp : SenderApp() {
         // 远程排障需要实时看手机屏幕：自动假息屏/暗幕（45s 无操作黑屏）在此变体
         // 一律禁用，只保留常亮；手动假息屏不受影响（2026-10-24 用户要求）。
         ScreenDimmer.autoDimAllowed = false
-        DebugFileLog.append(this, "BRIDGE: 远程调试变体启动（${io.github.shaonialife.cardeck.BuildConfig.VERSION_NAME}，自动暗幕已禁用）")
+        DebugFileLog.append(
+            this,
+            "BRIDGE: remote-debug variant started (${io.github.shaonialife.cardeck.BuildConfig.VERSION_NAME}, auto-dim disabled)",
+        )
         // 断连对用户可见：悬浮提示 + 设置页状态行的自动重连倒计时（2026-10-22
         // 用户要求）。恢复时短提示收口，反复震荡由悬浮窗单例自然去重（新弹覆盖旧弹）。
         BridgeClient.connectionEvents = { connected ->
             main.post {
                 if (connected) {
-                    BridgeOverlay.show(this, "调试连接已恢复", dismissMillis = 3_000)
+                    BridgeOverlay.show(this, "Debug connection restored", dismissMillis = 3_000)
                 } else {
                     BridgeOverlay.show(
                         this,
-                        "调试连接已断开——正在自动重连（进度见调试页状态行）",
+                        "Debug connection lost - reconnecting automatically (see status line on debug page)",
                         dismissMillis = 6_000,
                     )
                 }
@@ -42,7 +45,7 @@ class BridgeApp : SenderApp() {
         // 重装后的续接：上次安装前置位 → 拉起设置页弹「继续进入调试模式？」
         // （正规弹窗而非悬浮窗——悬浮窗易被忽略，用户实测反馈）
         if (BridgePrefs.resumePending(this)) {
-            DebugFileLog.append(this, "BRIDGE: 检测到重装前标记——询问是否继续调试")
+            DebugFileLog.append(this, "BRIDGE: pre-reinstall marker found - asking whether to resume debugging")
             BridgeSetupActivity.startForResume(this)
         } else if (BridgePrefs.autoConnect(this) && BridgePrefs.serverUrl(this).isNotBlank()) {
             Bg.run("bridge-start") { BridgeClient.start(this) }

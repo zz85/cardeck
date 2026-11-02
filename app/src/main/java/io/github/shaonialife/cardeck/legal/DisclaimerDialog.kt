@@ -58,12 +58,14 @@ object DisclaimerDialog {
         renderSections(activity, sections)
 
         if (requireAcceptance) {
-            subtitle.text = "首次使用前请完整阅读。接受后可在主界面底部随时重看。"
+            subtitle.text =
+                "Please read this in full before first use. After accepting, you can review it anytime " +
+                "from the bottom of the main screen."
         } else {
-            subtitle.text = "你可以随时回来查看本声明（当前版本 v${DisclaimerPrefs.CURRENT_VERSION}）。"
+            subtitle.text = "You can come back to this disclaimer anytime (current version v${DisclaimerPrefs.CURRENT_VERSION})."
             btnDecline.visibility = View.GONE
             btnAccept.isEnabled = true
-            btnAccept.text = "关闭"
+            btnAccept.text = "Close"
             blockHint.visibility = View.GONE
         }
 
@@ -85,7 +87,7 @@ object DisclaimerDialog {
             handler = mainHandler
             var scrolledToBottom = false
             SessionController.appendLog(
-                "DISCLAIMER: 弹出强制声明（倒计时 ${COUNTDOWN_MS / 1000} 秒 + 需滑到底）" +
+                "DISCLAIMER: showing mandatory disclaimer (${COUNTDOWN_MS / 1000}s countdown + scroll to bottom)" +
                     " remain=${(deadlineAt - SystemClock.elapsedRealtime()).coerceAtLeast(0L)}ms",
             )
 
@@ -103,7 +105,7 @@ object DisclaimerDialog {
                 val countdownDone = remainingMs <= 0L
                 val enabled = canAcceptDisclaimer(countdownDone, contentScrollable, scrolledToBottom)
                 btnAccept.isEnabled = enabled
-                btnAccept.text = if (countdownDone) "接受" else "接受（${remainingSeconds}s）"
+                btnAccept.text = if (countdownDone) "Accept" else "Accept (${remainingSeconds}s)"
                 val reason =
                     disclaimerBlockReason(
                         countdownDone = countdownDone,

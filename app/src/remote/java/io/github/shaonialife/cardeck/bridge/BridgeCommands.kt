@@ -20,31 +20,35 @@ object BridgeCommands {
     ): JSONObject {
         val ctx =
             context?.applicationContext
-                ?: return fail("应用上下文未就绪")
+                ?: return fail("App context not ready")
         return when (name) {
             "ping" -> JSONObject().put("ok", true).put("detail", "pong ${System.currentTimeMillis()}")
 
             "get_state" ->
                 JSONObject()
                     .put("ok", true)
-                    .put("detail", SessionController.statusLine() + " 会话=${if (SessionController.isSessionRunning()) "运行中" else "停止"}")
+                    .put(
+                        "detail",
+                        SessionController.statusLine() +
+                            " session=${if (SessionController.isSessionRunning()) "running" else "stopped"}",
+                    )
 
             "start_connection" -> {
                 // 与手机上点「启动连接」等价：前置（Shizuku/蓝牙）不满足时日志会说明
                 SessionController.ensure(ctx)
                 SessionController.startConnection(ctx)
-                BridgeOverlay.show(ctx, "开发者发起连接——正在进入主界面，进度见英雄卡")
+                BridgeOverlay.show(ctx, "Developer started a connection - opening main UI, see hero card for progress")
                 openMainUi(ctx)
-                JSONObject().put("ok", true).put("detail", "已发起连接（已跳转主界面）")
+                JSONObject().put("ok", true).put("detail", "Connection started (switched to main UI)")
             }
 
             "stop_connection" -> {
                 SessionController.disconnect(ctx)
-                BridgeOverlay.show(ctx, "开发者已断开车机连接")
-                JSONObject().put("ok", true).put("detail", "已断开")
+                BridgeOverlay.show(ctx, "Developer disconnected the head unit")
+                JSONObject().put("ok", true).put("detail", "Disconnected")
             }
 
-            else -> fail("未知命令：$name")
+            else -> fail("Unknown command: $name")
         }
     }
 

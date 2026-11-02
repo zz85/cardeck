@@ -180,26 +180,32 @@ class WifiCarPlayConnector(
                 // 对「系统已保存并连着热点」的车型重发 specifier 只会再挂（已保存
                 // SSID 正是挂起条件之一），短路是正确行为。
                 quickFallback?.invoke()?.let { fallback ->
-                    log("WiFi: 快速兜底入网成功（$fallback）——跳过 specifier 重发")
+                    log("WiFi: quick fallback join succeeded ($fallback) - skipping specifier resend")
                     return JoinResult.Joined(fallback)
                 }
             }
             if (!isCancelled()) {
-                log("WiFi: 首窗 ${firstWindowMs / 1000}s 零回调——specifier 可能挂起，重发网络请求（实测重发 1.6s 可入网）")
+                log(
+                    "WiFi: no callback in first ${firstWindowMs / 1000}s window - specifier may be stuck, " +
+                        "resending request (a resend joined in 1.6s in tests)",
+                )
                 network = requestAndAwait(ssid, request, secondWindowMs, isCancelled, unavailable)
             }
             if (network == null && !isCancelled() && !unavailable.get()) {
                 release()
                 if (!isCancelled()) {
                     deepFallback?.invoke()?.let { fallback ->
-                        log("WiFi: 深度兜底入网成功（$fallback）")
+                        log("WiFi: deep fallback join succeeded ($fallback)")
                         return JoinResult.Joined(fallback)
                     }
                 }
             }
         }
         if (network == null) {
-            log("WiFi: 等待加入 \"$ssid\" 失败（首窗 ${firstWindowMs / 1000}s + 重发窗 ${secondWindowMs / 1000}s + 两级兜底）")
+            log(
+                "WiFi: joining \"$ssid\" failed (first window ${firstWindowMs / 1000}s + " +
+                    "resend window ${secondWindowMs / 1000}s + two fallbacks)",
+            )
             release()
             return JoinResult.Unavailable
         }
@@ -222,19 +228,19 @@ class WifiCarPlayConnector(
                     val bound = connectivityManager.bindProcessToNetwork(network)
                     boundNetwork.set(network)
                     result.set(network)
-                    log("WiFi: 已加入应用专属网络 \"$ssid\"（$network bindProcessToNetwork=$bound）——不影响其它应用联网")
+                    log("WiFi: joined app-only network \"$ssid\" ($network bindProcessToNetwork=$bound) - other apps unaffected")
                     latch.countDown()
                 }
 
                 override fun onUnavailable() {
-                    log("WiFi: 系统未允许加入 \"$ssid\"（用户拒绝或热点不在范围内）")
+                    log("WiFi: system didn't allow joining \"$ssid\" (user declined or hotspot out of range)")
                     latch.countDown()
                 }
 
                 override fun onLost(network: Network) {
                     if (boundNetwork.compareAndSet(network, null)) {
                         connectivityManager.bindProcessToNetwork(null)
-                        log("WiFi: 应用专属网络 \"$ssid\" 已断开（$network）")
+                        log("WiFi: app-only network \"$ssid\" disconnected ($network)")
                         onNetworkLost?.invoke(ssid)
                     }
                 }
@@ -250,7 +256,7 @@ class WifiCarPlayConnector(
                 connectivityManager.requestNetwork(request, newCallback)
                 true
             } catch (error: Exception) {
-                log("WiFi: 发起应用专属网络请求失败（${error.message}）——可能需要位置权限或系统不支持")
+                log("WiFi: app-only network request failed (${error.message}) - may need location permission or unsupported by system")
                 false
             }
         if (!accepted) return null
@@ -297,7 +303,7 @@ class WifiCarPlayConnector(
             }
             builder.build()
         } catch (error: Exception) {
-            log("WiFi: 构造应用专属网络参数失败（${error.message}）")
+            log("WiFi: building app-only network specifier failed (${error.message})")
             null
         }
     }
@@ -332,12 +338,12 @@ class WifiCarPlayConnector(
                 override fun onAvailable(network: Network) {
                     boundNetwork.set(network)
                     val bound = connectivityManager.bindProcessToNetwork(network)
-                    log("WiFi: 已绑定当前WiFi网络 $network bindProcessToNetwork=$bound")
+                    log("WiFi: bound current WiFi network $network bindProcessToNetwork=$bound")
                     if (reported.compareAndSet(false, true)) onResult(true)
                 }
 
                 override fun onUnavailable() {
-                    log("WiFi: 没有可用的WiFi连接——请先在系统设置里加入接收端热点")
+                    log("WiFi: no WiFi connection available - join the receiver's hotspot in system settings first")
                     if (reported.compareAndSet(false, true)) onResult(false)
                 }
 
@@ -349,7 +355,7 @@ class WifiCarPlayConnector(
                         // 的主路径，不转发 onLost 会停在假「已连接」拖到心跳超时才死
                         // （2026-10-23 审阅定谳）。
                         connectivityManager.bindProcessToNetwork(null)
-                        log("WiFi: 绑定的 WiFi 网络已断开（$network）")
+                        log("WiFi: bound WiFi network disconnected ($network)")
                         ssidHint?.let { onNetworkLost?.invoke(it) }
                     }
                 }
@@ -367,7 +373,10 @@ class WifiCarPlayConnector(
                 return@run
             }
             if (!reported.get()) {
-                log("WiFi: 5 秒尚未绑定（手机可能还没连上热点）——请到 设置>WLAN 加入接收端热点，加入后本轮绑定会自动完成")
+                log(
+                    "WiFi: not bound after 5s (phone may not be on the hotspot yet) - " +
+                        "join the receiver hotspot in Settings > WLAN, binding then completes automatically",
+                )
             }
         }
     }

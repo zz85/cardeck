@@ -176,25 +176,25 @@ class VirtualIap2LinkTest {
         val detect = h.controlSent.size
         // 第 1 个：还不判定（MIB3 会再发一次探测重发）
         h.link.onCarBytes(Iap2LinkEngine.MARKER)
-        assertEquals("首个 marker 不应额外发字节", detect, h.controlSent.size)
+        assertEquals("first marker should not send extra bytes", detect, h.controlSent.size)
         // 第 2 个：升级为 marker + 同步包
         h.link.onCarBytes(Iap2LinkEngine.MARKER)
         val sent = h.controlSent.drop(detect)
-        assertTrue("重复 marker 后必须补发协商字节", sent.isNotEmpty())
+        assertTrue("repeated marker must trigger negotiation bytes", sent.isNotEmpty())
         val payload = sent.fold(ByteArray(0)) { acc, bytes -> acc + bytes }
         assertTrue(
-            "补发的第一批必须含 marker（FF 55）",
+            "first resend batch must contain marker (FF 55)",
             payload.size >= 6 && payload[0] == 0xFF.toByte() && payload[1] == 0x55.toByte(),
         )
         assertTrue(
-            "marker 之后必须紧跟 FF5A 会话表（车机等的就是它）",
+            "marker must be followed by FF5A session table (what the head unit waits for)",
             payload.size >= 12 && payload[6] == 0xFF.toByte() && payload[7] == 0x5A.toByte(),
         )
         assertTrue(
-            "会话表必须带 SYN 位（0x80）",
+            "session table must carry SYN bit (0x80)",
             (payload[10].toInt() and 0x80) != 0,
         )
-        assertTrue("出站绝不能落到事件通道", h.eventSent.isEmpty())
+        assertTrue("outbound must never go to the event channel", h.eventSent.isEmpty())
     }
 
     /**
@@ -213,14 +213,14 @@ class VirtualIap2LinkTest {
             val detect = h.controlSent.size
             // 第 1 个：还不判定（车机会再发探测重发）
             h.link.onCarBytes(Iap2LinkEngine.MARKER)
-            assertEquals("$generation 首个 marker 不应额外发字节", detect, h.controlSent.size)
+            assertEquals("$generation first marker should not send extra bytes", detect, h.controlSent.size)
             // 第 2 个：升级为 marker + 会话表
             h.link.onCarBytes(Iap2LinkEngine.MARKER)
             assertTrue(
-                "$generation 第 2 个 marker 必须触发协商字节（0.1.17 证伪「忽略」路线）",
+                "$generation 2nd marker must trigger negotiation bytes (0.1.17 disproved the \"ignore\" approach)",
                 h.controlSent.size > detect,
             )
-            assertTrue("$generation 出站不得落到事件通道", h.eventSent.isEmpty())
+            assertTrue("$generation outbound must not go to the event channel", h.eventSent.isEmpty())
         }
     }
 

@@ -188,12 +188,12 @@ object HidNavigation {
     /** 键盘键的可读名（日志用）。 */
     fun nameOf(keyCode: Int): String =
         when (keyCode) {
-            KeyEvent.KEYCODE_DPAD_UP -> "上"
-            KeyEvent.KEYCODE_DPAD_DOWN -> "下"
-            KeyEvent.KEYCODE_DPAD_LEFT -> "左"
-            KeyEvent.KEYCODE_DPAD_RIGHT -> "右"
-            KeyEvent.KEYCODE_DPAD_CENTER -> "确认"
-            KeyEvent.KEYCODE_BACK -> "返回"
+            KeyEvent.KEYCODE_DPAD_UP -> "Up"
+            KeyEvent.KEYCODE_DPAD_DOWN -> "Down"
+            KeyEvent.KEYCODE_DPAD_LEFT -> "Left"
+            KeyEvent.KEYCODE_DPAD_RIGHT -> "Right"
+            KeyEvent.KEYCODE_DPAD_CENTER -> "OK"
+            KeyEvent.KEYCODE_BACK -> "Back"
             else -> "$keyCode"
         }
 }

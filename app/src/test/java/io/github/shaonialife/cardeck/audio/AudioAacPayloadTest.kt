@@ -103,6 +103,6 @@ class AudioSyncPacketTest {
         } catch (_: IllegalArgumentException) {
             failed = true
         }
-        org.junit.Assert.assertTrue("NTP 必须是 8 字节", failed)
+        org.junit.Assert.assertTrue("NTP must be 8 bytes", failed)
     }
 }

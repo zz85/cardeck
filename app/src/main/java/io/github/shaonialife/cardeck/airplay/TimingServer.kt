@@ -44,7 +44,7 @@ class TimingServer(
             }
             true
         } catch (error: Exception) {
-            log("TIMING: 启动失败 - ${error.message}")
+            log("TIMING: start failed - ${error.message}")
             false
         }
     }
@@ -69,7 +69,7 @@ class TimingServer(
             if (response == null) {
                 unexpected++
                 if (unexpected <= 5) {
-                    log("TIMING: 收到非 timesync 报文 ${request.size}B（累计 $unexpected）")
+                    log("TIMING: non-timesync packet ${request.size}B (total $unexpected)")
                 }
                 continue
             }
@@ -77,7 +77,7 @@ class TimingServer(
             val now = System.currentTimeMillis()
             if (syncRequests <= 3 || now - lastSyncLogAt >= 30_000L) {
                 lastSyncLogAt = now
-                log("TIMING: timesync 应答 #$syncRequests → ${packet.address.hostAddress}:${packet.port}")
+                log("TIMING: timesync reply #$syncRequests → ${packet.address.hostAddress}:${packet.port}")
             }
             try {
                 s.send(DatagramPacket(response, response.size, packet.address, packet.port))

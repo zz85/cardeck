@@ -41,18 +41,18 @@ class Iap2LinkEngineTest {
 
         phone.initiate(0)
         val out = phone.takeOutput()
-        assertArrayEquals("首帧必须是 marker", Iap2LinkEngine.MARKER, out.copyOfRange(0, 6))
+        assertArrayEquals("first frame must be the marker", Iap2LinkEngine.MARKER, out.copyOfRange(0, 6))
         val frames = parseFrames(out)
-        assertEquals("marker 之后必须紧跟一条同步包", 1, frames.size)
-        assertTrue("同步包 control 必须带 SYN 位（0x80）", frames[0].control and 0x80 != 0)
+        assertEquals("marker must be followed immediately by one sync packet", 1, frames.size)
+        assertTrue("sync packet control must have the SYN bit (0x80)", frames[0].control and 0x80 != 0)
 
         // 车机侧收到「marker + 本表 SYN」→ 回 SYN|ACK（这就是日志里应当出现的推进）
         accessory.feed(out, tick())
-        assertEquals("车机侧收到我们的会话表后必须进入 NORMAL", Iap2LinkEngine.State.NORMAL, accessory.state)
+        assertEquals("head unit must enter NORMAL after receiving our session table", Iap2LinkEngine.State.NORMAL, accessory.state)
         phone.feed(accessory.takeOutput(), tick())
-        assertEquals("实际 phone=${phone.state}", Iap2LinkEngine.State.NORMAL, phone.state)
+        assertEquals("actual phone=${phone.state}", Iap2LinkEngine.State.NORMAL, phone.state)
         assertTrue(
-            "双方都必须采纳对方的会话表",
+            "both sides must adopt the other's session table",
             phone.peerSynchronization != null && accessory.peerSynchronization != null,
         )
     }
@@ -70,11 +70,11 @@ class Iap2LinkEngineTest {
         phone.takeOutput()
 
         phone.advanceTime(1_000L)
-        assertTrue("未停手时必须仍在重发 marker/同步包", phone.takeOutput().isNotEmpty())
+        assertTrue("must keep resending marker/sync packet until stopped", phone.takeOutput().isNotEmpty())
 
         phone.stopNegotiationRetries()
         phone.advanceTime(60_000L)
-        assertTrue("停手后不得再有任何出站字节", phone.takeOutput().isEmpty())
+        assertTrue("no outbound bytes allowed after stopping", phone.takeOutput().isEmpty())
         assertEquals(Iap2LinkEngine.State.NEGOTIATING, phone.state)
     }
 
@@ -159,8 +159,8 @@ class Iap2LinkEngineTest {
         val frames = parseFrames(phone.takeOutput())
         val synAck = frames.single { it.control == 0xC0 }
 
-        assertEquals("ack 必须回显对端 SYN 序号", 161, synAck.ack)
-        assertEquals("SYN-ACK 序号必须比 SYN 大 1", 100, synAck.sequence)
+        assertEquals("ack must echo the peer's SYN sequence", 161, synAck.ack)
+        assertEquals("SYN-ACK sequence must be SYN + 1", 100, synAck.sequence)
     }
 
     /**
@@ -185,7 +185,7 @@ class Iap2LinkEngineTest {
                 .forEach { replies += it.sequence to it.ack }
         }
 
-        assertEquals("每条 SYN 都应有 SYN|ACK", sequences.size, replies.size)
+        assertEquals("every SYN should get a SYN|ACK", sequences.size, replies.size)
         assertEquals(sequences, replies.map { it.second })
         // 序号逐次递增（99 → 100 → 101 → 102）
         assertEquals(listOf(100, 101, 102), replies.map { it.first })
@@ -203,7 +203,7 @@ class Iap2LinkEngineTest {
         phone.feed(synFrame(peerSequence = 77), 2)
         val again = phone.takeOutput()
 
-        assertArrayEquals("重传同一 SYN 应原样重放", first, again)
+        assertArrayEquals("retransmitting the same SYN should replay it verbatim", first, again)
         assertEquals(100, parseFrames(first).single { it.control == 0xC0 }.sequence)
     }
 
@@ -219,7 +219,7 @@ class Iap2LinkEngineTest {
             phone.feed(synFrame(peerSequence = peerSeq), (index + 1).toLong())
             emitted += parseFrames(phone.takeOutput()).map { it.sequence }
         }
-        assertEquals("序号必须严格递增且无重复", emitted.size, emitted.distinct().size)
+        assertEquals("sequence numbers must strictly increase with no duplicates", emitted.size, emitted.distinct().size)
         assertEquals(emitted.sorted(), emitted)
     }
 
@@ -254,7 +254,7 @@ class Iap2LinkEngineTest {
         offset: Int,
     ): ParsedFrame {
         require(bytes[offset] == 0xFF.toByte() && bytes[offset + 1] == 0x5A.toByte()) {
-            "offset=$offset 不是 FF5A 帧头"
+            "offset=$offset is not an FF5A frame header"
         }
         val length = ((bytes[offset + 2].toInt() and 0xFF) shl 8) or (bytes[offset + 3].toInt() and 0xFF)
         return ParsedFrame(

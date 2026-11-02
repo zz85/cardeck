@@ -35,7 +35,7 @@ object BridgeOverlay {
         val ctx = context?.applicationContext ?: return
         main.post {
             if (!android.provider.Settings.canDrawOverlays(ctx)) {
-                DebugFileLog.append(ctx, "BRIDGE: 无悬浮窗权限，提示丢弃：$text")
+                DebugFileLog.append(ctx, "BRIDGE: no overlay permission, hint dropped: $text")
                 return@post
             }
             hideLocked()

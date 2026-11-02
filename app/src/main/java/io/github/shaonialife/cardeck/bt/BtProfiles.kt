@@ -42,9 +42,9 @@ object BtProfiles {
 
     private fun profileName(profile: Int): String =
         when (profile) {
-            BluetoothProfile.HEADSET -> "通话(HFP)"
-            BluetoothProfile.A2DP -> "音频(A2DP)"
-            BluetoothProfile.LE_AUDIO -> "低功耗音频(LE)"
+            BluetoothProfile.HEADSET -> "Calls(HFP)"
+            BluetoothProfile.A2DP -> "Audio(A2DP)"
+            BluetoothProfile.LE_AUDIO -> "LE Audio(LE)"
             else -> "profile#$profile"
         }
 
@@ -161,7 +161,7 @@ object BtProfiles {
         // 回调永远无法执行 → 必然白等到超时（1.2s）并返回 null。宁可显式失败也不
         // 静默卡顿——调用方必须转到后台线程（本对象所有入口都是后台调用）。
         if (android.os.Looper.myLooper() == android.os.Looper.getMainLooper()) {
-            Log.w(TAG, "proxy() 在主线程调用——getProfileProxy 回调会被阻塞，返回 null")
+            Log.w(TAG, "proxy() called on main thread - getProfileProxy callback would be blocked, returning null")
             return null
         }
         if (!latch.await(1_200, TimeUnit.MILLISECONDS)) return null

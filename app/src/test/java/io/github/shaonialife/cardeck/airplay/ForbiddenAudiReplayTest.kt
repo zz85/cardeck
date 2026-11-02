@@ -95,21 +95,21 @@ class ForbiddenAudiReplayTest {
                 runCatching { acceptor.join(1_000) }
             }
 
-        assertNull("403 窗口内不可能建立密钥", keys)
-        assertTrue("verify/认证段的 403 也必须置位 pairingForbidden", client.pairingForbidden)
+        assertNull("no keys can be established inside the 403 window", keys)
+        assertTrue("403 in verify/auth stage must also set pairingForbidden", client.pairingForbidden)
         assertTrue(client.attemptedPairing)
 
         val stamps =
             synchronized(lock) { requestAtNs.sorted() }.map { it / 1_000_000 }
-        assertTrue("请求过少（${stamps.size} 次）——循环未真正轮转", stamps.size >= 4)
+        assertTrue("too few requests (${stamps.size}) - loop did not actually cycle", stamps.size >= 4)
         // 轮次聚类：同轮内 setup→verify 两条请求间隔 <3s，轮与轮之间 ≥4.5s（5s 退避）
         val cycles = ArrayList<Long>()
         for (i in stamps.indices) {
             if (i == 0 || stamps[i] - stamps[i - 1] >= 3_000) cycles.add(stamps[i])
         }
-        assertTrue("轮次 ${cycles.size}（期望 2~4）", cycles.size in 2..4)
+        assertTrue("rounds ${cycles.size} (expected 2~4)", cycles.size in 2..4)
         val gaps = cycles.zipWithNext { a, b -> b - a }
-        assertTrue("轮间退避不足（$gaps ms，期望 ≥4500）", gaps.all { it >= 4_500 })
+        assertTrue("insufficient backoff between rounds ($gaps ms, expected ≥4500)", gaps.all { it >= 4_500 })
     }
 
     /** 读到 HTTP 头结束（\r\n\r\n）；连接关闭返回 null。 */

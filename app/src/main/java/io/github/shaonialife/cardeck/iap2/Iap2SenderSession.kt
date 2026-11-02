@@ -199,7 +199,7 @@ class Iap2SenderSession(
     fun run(timeoutMillis: Long = 60_000L): CarPlayEndpoint {
         val deadline = System.nanoTime() + timeoutMillis * 1_000_000L
         if (!channel.awaitReady(remainingMillis(deadline))) {
-            throw IOException("iAP2 链路协商超时")
+            throw IOException("iAP2 link negotiation timed out")
         }
         log("iap2 link ready peerMaxControl=${channel.peerMaxControlPayload()}")
 
@@ -218,11 +218,11 @@ class Iap2SenderSession(
         val identityText = identityText(identification)
         val legacyCar = LEGACY_RECEIVER_MARKERS.any { identityText.contains(it) }
         if (legacyCar) {
-            log("iap2 识别为真车系（$identityText）——MFi 首选 20B（真 iPhone 实录长度；32B 对真车处置不稳定）")
+            log("iap2 identified as real car ($identityText) - MFi prefers 20B (real iPhone capture length; 32B unstable on real cars)")
         }
         send(Iap2MessageIds.MFI_REQUEST_CERTIFICATE)
         val certificate = expect(Iap2MessageIds.MFI_CERTIFICATE, deadline)
-        log("iap2 rx=0xaa01 certificate bytes=${certificate.body.size}（跳过校验）")
+        log("iap2 rx=0xaa01 certificate bytes=${certificate.body.size} (verification skipped)")
         // 挑战长度按接收端身份选择（2026-10-11 奥迪字节级实测修正）：
         //  - 真车系（Audi/Delphi MIB 等）：**20B 首试**。真 iPhone 实录（carplay-wifi-extractor
         //    client）与 catplay 发送端都用 20B；奥迪对 20B 秒答。32B 先行会导致车机
@@ -232,7 +232,7 @@ class Iap2SenderSession(
         // 全部无应答也不中止——我们不校验签名（0xAA05 自报），由 0x5702 是否应答判定放行。
         runMfiChallenge(deadline, prefer20First = legacyCar, receiverKey = identityText)
         send(Iap2MessageIds.MFI_AUTHENTICATION_SUCCEEDED)
-        log("iap2 tx=0xaa05 authentication-succeeded（自报）")
+        log("iap2 tx=0xaa05 authentication-succeeded (self-reported)")
 
         // ---- 设备状态问候（须紧跟 0xAA05：车机据此判定 accessory 就绪）----
         sendDeviceStateGreetings()
@@ -258,9 +258,9 @@ class Iap2SenderSession(
                     wifiRescueDeadline(deadline, 500L),
                 )
             if (status != null) {
-                log("iap2 rx=0xea03 EA 会话已打开（${status.body.size}B）")
+                log("iap2 rx=0xea03 EA session opened (${status.body.size}B)")
             } else {
-                log("iap2 0xea03 未到（EA 会话未确认）——继续 WiFi 交换")
+                log("iap2 0xea03 not received (EA session unconfirmed) - continuing WiFi exchange")
             }
         }
 
@@ -293,14 +293,14 @@ class Iap2SenderSession(
         val legacyWifiExchange = wifiGen != ReceiverProfile.WifiGen.NEW
         if (!legacyWifiExchange) {
             log(
-                "iap2 车机画像判 NEW（BMW iD9 形态）——跳过 0x5702，AP 信息由 0x4301 提供" +
-                    "（清单声明 收=${declaresReceiveWifi ?: "未知"} 发=${declaresSendWifi ?: "未知"}）",
+                "iap2 receiver profile is NEW (BMW iD9 style) - skipping 0x5702, AP info comes from 0x4301" +
+                    " (lists declare rx=${declaresReceiveWifi ?: "unknown"} tx=${declaresSendWifi ?: "unknown"})",
             )
         } else if (declaresReceiveWifi == false || declaresSendWifi == false) {
             log(
-                "iap2 清单未声明 0x5702/0x5703（收=${declaresReceiveWifi ?: "未知"} " +
-                    "发=${declaresSendWifi ?: "未知"}）但画像判 $wifiGen——仍发 0x5702" +
-                    "（清单不完整不能反证「不支持」；车机对未声明消息通常照常处理）",
+                "iap2 lists don't declare 0x5702/0x5703 (rx=${declaresReceiveWifi ?: "unknown"} " +
+                    "tx=${declaresSendWifi ?: "unknown"}) but profile is $wifiGen - still sending 0x5702" +
+                    " (incomplete lists don't prove \"unsupported\"; head units usually handle undeclared messages)",
             )
         }
         val wifiFromExchange: WifiConfiguration? =
@@ -316,7 +316,7 @@ class Iap2SenderSession(
                     )
                 if (wifiConfiguration == null) {
                     sendDeviceStateGreetings(force = true)
-                    log("iap2 0x5703 1.5s 未到——重发设备状态问候，继续等待")
+                    log("iap2 0x5703 not received in 1.5s - resending device state greetings, still waiting")
                     wifiConfiguration =
                         expectOrNull(
                             Iap2MessageIds.ACCESSORY_WIFI_CONFIGURATION,
@@ -325,19 +325,22 @@ class Iap2SenderSession(
                 }
                 if (wifiConfiguration == null) {
                     send(Iap2MessageIds.REQUEST_ACCESSORY_WIFI_CONFIGURATION)
-                    log("iap2 0x5702 重发一次（首次仅链路 ACK）")
+                    log("iap2 0x5702 resent once (first got link ACK only)")
                     wifiConfiguration =
                         expectOrNull(Iap2MessageIds.ACCESSORY_WIFI_CONFIGURATION, deadline)
                 }
                 if (wifiConfiguration == null) {
-                    log("iap2 0x5703 三段救援（问候/0x5702 重发）后仍未到达——改走 0x4300/0x4301（新版协议自带 AP 信息）")
+                    log(
+                        "iap2 0x5703 still missing after 3-stage rescue (greetings/0x5702 resend) - " +
+                            "switching to 0x4300/0x4301 (new protocol carries AP info)",
+                    )
                     null
                 } else {
                     // 显式断言：上面按分段等待赋值过 3 次，避免依赖 var 的智能转换
                     val parsed = parseWifiConfiguration(wifiConfiguration!!)
                     log(
                         "iap2 rx=0x5703 ssid=${parsed.ssid} channel=${parsed.channel} " +
-                            "security=${parsed.securityType} psk=${if (parsed.passphrase.isEmpty()) "(空)" else "***"}",
+                            "security=${parsed.securityType} psk=${if (parsed.passphrase.isEmpty()) "(empty)" else "***"}",
                     )
                     // 真车死锁解药（catplay CarPlayInviter 实证）：车机在 WiFi 网络上发现手机的
                     // _carplay-ctrl._tcp 后主动发 GET /ctrl-int/1/connect 邀请，**邀请成功才发 0x4301**。
@@ -373,7 +376,7 @@ class Iap2SenderSession(
             if (wifiFromExchange == null) START_SESSION_WAIT_NEW_PROTOCOL_NANOS else START_SESSION_WAIT_NANOS
         var startSession: Iap2Csm.Frame? = null
         if (declaresStartSession == false) {
-            log("iap2 车机未声明会发 0x4301——跳过等待（AirPlay 端点走 mDNS/网关）")
+            log("iap2 head unit didn't declare sending 0x4301 - skipping wait (AirPlay endpoint via mDNS/gateway)")
         } else {
             // 车机可能只发 0x4301 而完全不回答 0x5702：发送后先等一轮，
             // 若这段时间里 0x4301 先到了（新协议的正常顺序），直接采用。
@@ -392,11 +395,11 @@ class Iap2SenderSession(
                 // 否则排查时会被这句话误导成「这条路对本车不通」。
                 log(
                     if (declaresStartSession == true) {
-                        "iap2 0x4301 在 ${startSessionWindow / 1_000_000_000}s 窗口内未到" +
-                            "（车机声明会发——可能稍后补发，保活期间收到会重新触发配对）——" +
-                            "先用 mDNS/网关"
+                        "iap2 0x4301 not received within ${startSessionWindow / 1_000_000_000}s window" +
+                            " (head unit declared it - may arrive later; receipt during keep-alive re-triggers pairing) - " +
+                            "using mDNS/gateway for now"
                     } else {
-                        "iap2 0x4301 未到（车机未声明会发；AirPlay 端点走 mDNS _airplay._tcp）"
+                        "iap2 0x4301 not received (head unit didn't declare it; AirPlay endpoint via mDNS _airplay._tcp)"
                     },
                 )
                 if (wifiFromExchange != null) {
@@ -419,8 +422,8 @@ class Iap2SenderSession(
                     val fallback = credentiallessEndpoint(knownCarSsid?.invoke())
                     if (fallback != null) {
                         log(
-                            "iap2 无新凭据——沿用已知热点 \"${fallback.ssid}\" 继续" +
-                                "（绑定当前网络后走 mDNS/网关，晚到的 0x4301 会热更新端点），不拆链",
+                            "iap2 no new credentials - continuing with known hotspot \"${fallback.ssid}\"" +
+                                " (bind current network then mDNS/gateway; a late 0x4301 hot-updates the endpoint), keeping link",
                         )
                         fallback
                     } else if (declaresStartSession == true) {
@@ -432,8 +435,8 @@ class Iap2SenderSession(
                         //    返回空端点，主控进入等待态；晚到 0x4301 由保活泵经
                         //    handleLateStartSession → onEndpointUpdate 重新触发配对。
                         log(
-                            "iap2 0x4301 窗口内未到但车机声明会发——不拆链，返回空端点进入保活；" +
-                                "晚到 0x4301 将重新触发配对（Audi MMI 9310 先例：2 分 35 秒）",
+                            "iap2 0x4301 missed window but head unit declared it - keeping link, empty endpoint, entering keep-alive; " +
+                                "a late 0x4301 will re-trigger pairing (Audi MMI 9310 precedent: 2 min 35 s)",
                         )
                         CarPlayEndpoint(
                             ssid = "",
@@ -449,8 +452,8 @@ class Iap2SenderSession(
                     } else {
                         // ③ 一点线索都没有（连 SSID 都不知道、车机也没承诺），继续等只会空转。
                         throw IOException(
-                            "未拿到车机热点凭据：本轮 0x5702/0x4301 都没给出 AP 信息，" +
-                                "且本进程没有已知的车机热点（请先在车机上重新选择本机）",
+                            "No head unit hotspot credentials: neither 0x5702 nor 0x4301 gave AP info this round, " +
+                                "and no known car hotspot in this process (re-select this phone on the head unit first)",
                         )
                     }
                 }
@@ -471,7 +474,7 @@ class Iap2SenderSession(
             Iap2MessageIds.DEVICE_TRANSPORT_IDENTIFIER,
             Iap2Csm.string(0, bluetoothMac),
         )
-        log("iap2 0x4e0d/0x4e0e/0x4300 —— Phase 1 完成：拿到热点凭据与（可能的）AirPlay 端点")
+        log("iap2 0x4e0d/0x4e0e/0x4300 - Phase 1 done: got hotspot credentials and (possibly) AirPlay endpoint")
 
         // 后续（Phase 2）：加入热点 → mDNS 解析 _airplay._tcp → AirPlay 主会话。
         // 0x5703 缺席时 AP 信息来自 0x4301（已并入 endpoint）——保活期车机重发
@@ -497,7 +500,7 @@ class Iap2SenderSession(
      * 真实无线 CarPlay 中这条控制通道与 AirPlay 会话并存于整个连接生命周期。
      */
     fun pumpIncomingForever() {
-        log("SESSION 保活中（链路保持打开，持续记录配件消息）")
+        log("SESSION keep-alive (link held open, logging accessory messages)")
         // 同一消息 ID 连续到达时限流：车机进入媒体播放后会周期性发 NowPlaying 更新，
         // 逐条打日志会把文件日志撑爆（文件超 2MB 直接删，等于丢掉真正有用的上下文）。
         var lastLoggedId = -1
@@ -520,7 +523,7 @@ class Iap2SenderSession(
                 if (repeatCount % 100 != 0) continue
             } else {
                 if (repeatCount >= 99) {
-                    log("iap2 上一条 0x${lastLoggedId.toString(16)} 重复 ${repeatCount + 1} 次（同类已限流）")
+                    log("iap2 previous 0x${lastLoggedId.toString(16)} repeated ${repeatCount + 1} times (rate-limited)")
                 }
                 lastLoggedId = frame.messageId
                 repeatCount = 0
@@ -530,7 +533,7 @@ class Iap2SenderSession(
                     "(${Iap2MessageIds.nameOf(frame.messageId)}) keep-alive bytes=${frame.body.size}",
             )
         }
-        log("SESSION 保活结束（链路断开）")
+        log("SESSION keep-alive ended (link closed)")
     }
 
     /**
@@ -549,20 +552,20 @@ class Iap2SenderSession(
                     channel = endpoint.channel,
                     securityType = endpoint.securityType,
                 )
-            log("iap2 0x4301 自带 AP 信息：ssid=${endpoint.ssid}——已缓存，供后续 0x5703/0x4301 复用")
+            log("iap2 0x4301 carries AP info: ssid=${endpoint.ssid} - cached for later 0x5703/0x4301 reuse")
         }
         if (endpoint.ssid.isEmpty()) {
-            log("iap2 rx=0x4301（晚到）——无线组里没解析出 SSID，本条忽略")
+            log("iap2 rx=0x4301 (late) - no SSID parsed from wireless group, ignoring")
             return
         }
         // 车机可能周期性重发同一份 0x4301：详情只在端点变化时打，避免刷日志。
         if (endpoint.hashCode() != lastLateStartSessionSignature) {
             lastLateStartSessionSignature = endpoint.hashCode()
             log(
-                "iap2 rx=0x4301（晚到，Phase 1 之后）airPlayPort=${endpoint.airPlayPort} " +
+                "iap2 rx=0x4301 (late, after Phase 1) airPlayPort=${endpoint.airPlayPort} " +
                     "device=${endpoint.deviceIdentifier} publicKey=${endpoint.publicKey?.take(16)}… " +
                     "srcvers=${endpoint.sourceVersion} ips=${endpoint.ipAddresses}" +
-                    "——交给主控热更新端点/重试配对",
+                    " - handing to controller to hot-update endpoint/retry pairing",
             )
         }
         onEndpointUpdate?.invoke(endpoint)
@@ -574,8 +577,8 @@ class Iap2SenderSession(
         startSessionRawLogged = true
         val body = frame.body
         val shown = if (body.size <= START_SESSION_RAW_LOG_BYTES) body else body.copyOf(START_SESSION_RAW_LOG_BYTES)
-        val truncated = if (body.size > shown.size) "（前 ${shown.size}/${body.size} 字节）" else ""
-        log("iap2 0x4301 原始体$truncated=" + shown.joinToString("") { "%02x".format(it) })
+        val truncated = if (body.size > shown.size) " (first ${shown.size}/${body.size} bytes)" else ""
+        log("iap2 0x4301 raw body$truncated=" + shown.joinToString("") { "%02x".format(it) })
     }
 
     // ---- 帧收发 ----
@@ -611,8 +614,8 @@ class Iap2SenderSession(
         val order = MfiLengthMemory.orderAttempts(baselineLengths, memory)
         if (!memory.isEmpty) {
             log(
-                "iap2 MFi 按车机记忆（$receiverKey）：${MfiLengthMemory.describe(memory)}" +
-                    " → 本轮顺序 ${order.joinToString("/")}B",
+                "iap2 MFi per head unit memory ($receiverKey): ${MfiLengthMemory.describe(memory)}" +
+                    " → order this round ${order.joinToString("/")}B",
             )
         }
         for ((position, size) in order.withIndex()) {
@@ -626,7 +629,7 @@ class Iap2SenderSession(
                 }
             val challenge = ByteArray(size).also(random::nextBytes)
             send(Iap2MessageIds.MFI_REQUEST_CHALLENGE, Iap2Csm.param(0, challenge))
-            log("iap2 tx=0xaa02 challenge=${size}B（第 ${position + 1} 次，窗口 ${windowMillis}ms）")
+            log("iap2 tx=0xaa02 challenge=${size}B (attempt ${position + 1}, window ${windowMillis}ms)")
             val window = minOf(System.nanoTime() + windowMillis * 1_000_000L, deadline)
             var gotResponse = false
             var gotFailure = false
@@ -636,7 +639,7 @@ class Iap2SenderSession(
                 val frame = recvFrame(remaining)
                 if (frame == null) {
                     if (!channel.isAlive) {
-                        log("iap2 MFi 挑战期间链路断开（${size}B，对端不接受该长度）——记入该车机被拒档位")
+                        log("iap2 link dropped during MFi challenge (${size}B, peer rejects length) - recorded as rejected for this car")
                         // 硬拒绝：链路级证据，推翻「该长度=上次成功」的记忆（防误记锁死）
                         MfiLengthMemory.recordHardRejected(context, receiverKey, size)
                         return
@@ -645,12 +648,12 @@ class Iap2SenderSession(
                 }
                 when (frame.messageId) {
                     Iap2MessageIds.MFI_RESPONSE -> {
-                        log("iap2 rx=0xaa03 signature bytes=${frame.body.size}（跳过校验）")
+                        log("iap2 rx=0xaa03 signature bytes=${frame.body.size} (verification skipped)")
                         gotResponse = true
                     }
 
                     Iap2MessageIds.MFI_AUTHENTICATION_FAILED -> {
-                        log("iap2 rx=0xaa04 挑战 ${size}B 被拒")
+                        log("iap2 rx=0xaa04 challenge ${size}B rejected")
                         gotFailure = true
                     }
 
@@ -672,9 +675,9 @@ class Iap2SenderSession(
                 MfiLengthMemory.recordSilent(context, receiverKey, size)
             }
             if (position < order.size - 1) {
-                log("iap2 MFi ${size}B 无应答，改用 ${order[position + 1]}B 重试")
+                log("iap2 MFi ${size}B no response, retrying with ${order[position + 1]}B")
             } else {
-                log("iap2 MFi 挑战全部无应答——跳过校验直接发 0xaa05（由 0x5702 判定车机是否放行）")
+                log("iap2 no MFi challenge answered - skipping verification, sending 0xaa05 (0x5702 decides if head unit accepts)")
             }
         }
     }
@@ -708,8 +711,8 @@ class Iap2SenderSession(
             Iap2Csm.string(0, deviceUuid()),
         )
         log(
-            "iap2 tx=0x4e0d/0x4e0a/0x4e09/0x4e0b/0x4e0c 设备状态问候" +
-                "（name=$deviceName mac=$bluetoothMac）",
+            "iap2 tx=0x4e0d/0x4e0a/0x4e09/0x4e0b/0x4e0c device state greetings" +
+                " (name=$deviceName mac=$bluetoothMac)",
         )
     }
 
@@ -735,7 +738,7 @@ class Iap2SenderSession(
         while (offset < frame.size) {
             val end = minOf(offset + limit, frame.size)
             if (!channel.sendControl(frame.copyOfRange(offset, end))) {
-                throw IOException("iAP2 链路在发送 0x${messageId.toString(16)} 时关闭")
+                throw IOException("iAP2 link closed while sending 0x${messageId.toString(16)}")
             }
             offset = end
         }
@@ -753,11 +756,11 @@ class Iap2SenderSession(
         while (offset < frame.size) {
             val end = minOf(offset + limit, frame.size)
             if (!channel.sendControl(frame.copyOfRange(offset, end), awaitAck = false)) {
-                throw IOException("iAP2 链路在发送 0x${messageId.toString(16)} 时关闭")
+                throw IOException("iAP2 link closed while sending 0x${messageId.toString(16)}")
             }
             offset = end
         }
-        log("iap2 tx=0x${messageId.toString(16).padStart(4, '0')}（发后不管）")
+        log("iap2 tx=0x${messageId.toString(16).padStart(4, '0')} (fire-and-forget)")
     }
 
     private fun expect(
@@ -765,7 +768,7 @@ class Iap2SenderSession(
         deadline: Long,
     ): Iap2Csm.Frame =
         expectOrNull(messageId, deadline)
-            ?: throw IOException("等待 0x${messageId.toString(16)} 超时")
+            ?: throw IOException("Timed out waiting for 0x${messageId.toString(16)}")
 
     /**
      * 同 [expect]，但超时返回 null（用于可选消息）。非预期帧进暂存区供后续消费。
@@ -793,14 +796,14 @@ class Iap2SenderSession(
             if (frame.messageId == messageId) return frame
             log(
                 "iap2 rx=0x${frame.messageId.toString(16).padStart(4, '0')} " +
-                    "(${Iap2MessageIds.nameOf(frame.messageId)})，非预期，暂存待后续消费",
+                    "(${Iap2MessageIds.nameOf(frame.messageId)}), unexpected, stashed for later",
             )
             pendingFrames += frame
             if (pendingFrames.size > maxPendingFrames) {
                 pendingFrames.removeFirst()
                 if (!pendingOverflowLogged) {
                     pendingOverflowLogged = true
-                    log("iap2 非预期帧暂存区超过 $maxPendingFrames 条——丢弃最旧的（车机订阅类消息过多）")
+                    log("iap2 unexpected-frame stash exceeded $maxPendingFrames - dropping oldest (too many subscription messages)")
                 }
             }
         }
@@ -809,14 +812,14 @@ class Iap2SenderSession(
     private fun awaitOptionalHid(deadline: Long) {
         // 声明清单里没有 StartHID 就不等（DiPlay/奥迪实测均不发，旧流程每轮白等 2s）。
         if (accessoryDeclaresSend(Iap2MessageIds.START_HID) == false) {
-            log("iap2 车机未声明会发 0x6800 StartHID——跳过 2s 等待")
+            log("iap2 head unit didn't declare 0x6800 StartHID - skipping 2s wait")
             return
         }
         val hidWindowNanos = minOf(System.nanoTime() + HID_WAIT_NANOS, deadline)
         while (true) {
             val remaining = (hidWindowNanos - System.nanoTime()) / 1_000_000L
             if (remaining <= 0) {
-                log("iap2 未收到 0x6800（该接收端不发 StartHID，继续）")
+                log("iap2 no 0x6800 received (receiver doesn't send StartHID, continuing)")
                 return
             }
             val frame = recvFrame(remaining)
@@ -923,12 +926,12 @@ class Iap2SenderSession(
                 ?.mapNotNull { param -> param.value.asStringOrEmpty()?.takeIf { it.isNotEmpty() } }
                 .orEmpty()
         log(
-            "iap2 0x4301 顶层参数: " +
+            "iap2 0x4301 top-level params: " +
                 params.entries.joinToString(" ") { (id, param) -> "#$id(${param.value.size}B)" },
         )
         if (wireless != null) {
             log(
-                "iap2 0x4301 无线组参数: " +
+                "iap2 0x4301 wireless group params: " +
                     wireless.joinToString(" ") { param ->
                         "#${param.id}=" + param.value.joinToString("") { "%02x".format(it) }
                     },
@@ -938,8 +941,8 @@ class Iap2SenderSession(
         val ap = wifi ?: fromSession
         if (wifi == null && fromSession != null) {
             log(
-                "iap2 0x4301 自带 AP：ssid=${fromSession.ssid} channel=${fromSession.channel} " +
-                    "security=${fromSession.securityType} psk=${if (fromSession.passphrase.isEmpty()) "(空)" else "***"}",
+                "iap2 0x4301 carries AP: ssid=${fromSession.ssid} channel=${fromSession.channel} " +
+                    "security=${fromSession.securityType} psk=${if (fromSession.passphrase.isEmpty()) "(empty)" else "***"}",
             )
         }
         return CarPlayEndpoint(
@@ -1002,7 +1005,7 @@ class Iap2SenderSession(
                     ?.and(0xFF) ?: continue
             val name = sub[1]?.value?.asStringOrEmpty() ?: "?"
             out += protocolId to name
-            log("iap2 0x1d01 EA 组件[$groupId] protocol=$protocolId name=$name")
+            log("iap2 0x1d01 EA component[$groupId] protocol=$protocolId name=$name")
         }
         return out
     }
@@ -1012,7 +1015,7 @@ class Iap2SenderSession(
         val name = params[0]?.value?.asStringOrEmpty()
         val model = params[1]?.value?.asStringOrEmpty()
         val manufacturer = params[2]?.value?.asStringOrEmpty()
-        log("iap2 rx=0x1d01 车机身份 name=$name model=$model manufacturer=$manufacturer")
+        log("iap2 rx=0x1d01 head unit identity name=$name model=$model manufacturer=$manufacturer")
         // 参 6/7 = 车机声明「它会发送/它可接收」的消息 ID 清单。
         // 参 7（它可接收）直接告诉我们它是否认可 0x4300 —— 真车排查的关键证据。
         val sends = params[6]?.value?.asU16List()
@@ -1020,12 +1023,12 @@ class Iap2SenderSession(
         if (sends != null) {
             // 后续可选消息（0x6800/0x4301）按此清单判断是否会来，避免固定窗口空等
             accessorySendIds = sends.toSet()
-            log("iap2 0x1d01 车机发送清单(${sends.size})=" + sends.joinToString(" ") { "0x%04x".format(it) })
+            log("iap2 0x1d01 head unit send list(${sends.size})=" + sends.joinToString(" ") { "0x%04x".format(it) })
             log(
-                "iap2 0x1d01 可选消息声明：StartHID(0x6800)=" +
-                    (accessoryDeclaresSend(Iap2MessageIds.START_HID)?.let { if (it) "会发" else "不发" } ?: "未知") +
+                "iap2 0x1d01 optional message declarations: StartHID(0x6800)=" +
+                    (accessoryDeclaresSend(Iap2MessageIds.START_HID)?.let { if (it) "sends" else "no" } ?: "unknown") +
                     " CarPlayStartSession(0x4301)=" +
-                    (accessoryDeclaresSend(Iap2MessageIds.CARPLAY_START_SESSION)?.let { if (it) "会发" else "不发" } ?: "未知"),
+                    (accessoryDeclaresSend(Iap2MessageIds.CARPLAY_START_SESSION)?.let { if (it) "sends" else "no" } ?: "unknown"),
             )
         }
         if (receives != null) {
@@ -1033,7 +1036,7 @@ class Iap2SenderSession(
             // （BMW iD9 的可收清单里没有 0x5702，旧流程因此每轮死等 0x5703 超时）。
             accessoryReceiveIds = receives.toSet()
             receiveListDeclared = true
-            log("iap2 0x1d01 车机可收清单(${receives.size})=" + receives.joinToString(" ") { "0x%04x".format(it) })
+            log("iap2 0x1d01 head unit receive list(${receives.size})=" + receives.joinToString(" ") { "0x%04x".format(it) })
             // 车机画像（信号收口点）：身份 + 双清单 → era/wifiGen 一行判定，
             // 依据随行——判错时从这里回溯是哪条信号误导（铁律：按能力不按品牌）
             val profile =
@@ -1057,25 +1060,30 @@ class Iap2SenderSession(
                         receiveIds = receives.toSet(),
                     ),
                 )
-            log("IAPLINK: 链路代际判定 = $linkGeneration（AirPlay 阶段据此分派 marker 策略）")
+            log("IAPLINK: link generation = $linkGeneration (AirPlay stage picks marker strategy from this)")
             log(ReceiverProfile.describe(profile))
             log(
-                "iap2 0x1d01 协议代际：请求 WiFi 配置(0x5702)=" +
+                "iap2 0x1d01 protocol generation: request WiFi config(0x5702)=" +
                     (
                         accessoryDeclaresReceive(Iap2MessageIds.REQUEST_ACCESSORY_WIFI_CONFIGURATION)?.let {
-                            if (it) "可收" else "不收"
-                        } ?: "未知"
+                            if (it) "accepts" else "no"
+                        } ?: "unknown"
                     ) +
-                    " 回 WiFi 配置(0x5703)=" +
+                    " reply WiFi config(0x5703)=" +
                     (
                         accessoryDeclaresSend(Iap2MessageIds.ACCESSORY_WIFI_CONFIGURATION)?.let {
-                            if (it) "会发" else "不发"
-                        } ?: "未知"
+                            if (it) "sends" else "no"
+                        } ?: "unknown"
                     ) +
-                    " → 本轮" + if (profile.wifiGen == ReceiverProfile.WifiGen.NEW) "不发 0x5702（等 0x4301）" else "发 0x5702（清单不全也发）",
+                    " → this round " +
+                    if (profile.wifiGen == ReceiverProfile.WifiGen.NEW) {
+                        "skip 0x5702 (await 0x4301)"
+                    } else {
+                        "send 0x5702 (even with incomplete lists)"
+                    },
             )
         }
-        log("iap2 0x1d01 原始体=" + frame.body.joinToString("") { "%02x".format(it) })
+        log("iap2 0x1d01 raw body=" + frame.body.joinToString("") { "%02x".format(it) })
     }
 
     private fun remainingMillis(deadlineNanos: Long): Long {

@@ -31,5 +31,5 @@ enum class AudioTuning(
 
     /** 日志用的一行说明。 */
     val detail: String
-        get() = "裸 AAC 帧 + spf=$spf + 到达时间戳"
+        get() = "raw AAC frames + spf=$spf + arrival timestamps"
 }

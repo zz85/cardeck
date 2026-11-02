@@ -64,11 +64,11 @@ private fun resolveBluetoothMac(
     val mac = DeviceIdentity.bluetoothMac(context, forceRetry = true)
     if (mac == DeviceIdentity.PLACEHOLDER_MAC) {
         log(
-            "BT: ⚠ 未能解析真实蓝牙 MAC（仍是占位值）——车机会校验 0x4300 的传输标识，" +
-                "占位值可能导致它不下发 0x4301。请确认 Shizuku 已启动并已授权",
+            "BT: ⚠ couldn't resolve real Bluetooth MAC (still placeholder) - head unit checks the 0x4300 transport id, " +
+                "a placeholder may stop it sending 0x4301. Make sure Shizuku is running and authorized",
         )
     } else {
-        log("BT: 本机蓝牙 MAC=$mac（0x4300/0x4E0E 与 ctrl 广播 TXT id 同源）")
+        log("BT: local Bluetooth MAC=$mac (same source as 0x4300/0x4E0E and ctrl advert TXT id)")
     }
     return mac
 }

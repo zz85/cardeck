@@ -21,12 +21,12 @@ class TunnelReplayTest {
         val fixtures = CarFixture.loadDirectory()
         val usable = fixtures.filter { it.tunnelRx.isNotEmpty() }
         if (usable.isEmpty()) {
-            println("REPLAY: 无隧道 fixture——跳过")
+            println("REPLAY: no tunnel fixture - skipping")
             return
         }
         val failures = ArrayList<String>()
         usable.forEach { fixture -> replay(fixture, failures) }
-        assertTrue("隧道重放回归失败：\n" + failures.joinToString("\n"), failures.isEmpty())
+        assertTrue("Tunnel replay regression failed:\n" + failures.joinToString("\n"), failures.isEmpty())
     }
 
     private class Harness {
@@ -84,11 +84,11 @@ class TunnelReplayTest {
         h.link.armMib3()
         h.car.start(h.engineClock)
         h.exchange()
-        assertEquals("${fixture.car}: 链路未达 NORMAL", Iap2LinkEngine.State.NORMAL, h.car.state)
+        assertEquals("${fixture.car}: link did not reach NORMAL", Iap2LinkEngine.State.NORMAL, h.car.state)
 
         fixture.tunnelRx.forEach { (messageId, body) ->
             assertTrue(
-                "${fixture.car}: 注入 0x${messageId.toString(16)} 失败（引擎拒绝入队）",
+                "${fixture.car}: injecting 0x${messageId.toString(16)} failed (engine refused to enqueue)",
                 h.car.sendControl(Iap2Csm.encode(messageId, body), h.engineClock),
             )
             h.exchange()
@@ -101,12 +101,12 @@ class TunnelReplayTest {
         val subsequenceOk = isOrderedSubsequence(recordedCore, replayCore)
         if (!subsequenceOk) {
             failures.add(
-                "${fixture.car}: 隧道应答序列漂移（录制应为回放的有序子序列）\n" +
-                    "  录制=${recordedCore.joinToString { "0x%04x".format(it) }}\n" +
-                    "  回放=${replayCore.joinToString { "0x%04x".format(it) }}",
+                "${fixture.car}: tunnel response sequence drifted (recording should be an ordered subsequence of replay)\n" +
+                    "  recorded=${recordedCore.joinToString { "0x%04x".format(it) }}\n" +
+                    "  replayed=${replayCore.joinToString { "0x%04x".format(it) }}",
             )
         } else {
-            println("REPLAY ✓ ${fixture.car} 隧道序列一致（录制 ${recordedCore.size} ⊆ 回放 ${replayCore.size}）")
+            println("REPLAY ✓ ${fixture.car} tunnel sequence matches (recorded ${recordedCore.size} ⊆ replayed ${replayCore.size})")
         }
     }
 

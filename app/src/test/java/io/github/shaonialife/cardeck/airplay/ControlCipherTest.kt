@@ -48,11 +48,11 @@ class ControlCipherTest {
         var frames = 0
         while (offset < wire.size) {
             val length = (wire[offset].toInt() and 0xFF) or ((wire[offset + 1].toInt() and 0xFF) shl 8)
-            assertTrue("帧明文长度 $length 超过 1422（MTU 1440）", length <= 1422)
+            assertTrue("frame plaintext length $length exceeds 1422 (MTU 1440)", length <= 1422)
             offset += 2 + length + 16
             frames++
         }
-        assertEquals("5000 字节至少拆成 4 帧", 4, frames)
+        assertEquals("5000 bytes split into at least 4 frames", 4, frames)
         assertArrayEquals(big, receiver.decrypt(wire).data)
     }
 

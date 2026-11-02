@@ -595,7 +595,7 @@ class DualDisplayComposer(
                         if (nowMs - lastPortraitTileDiag > 5_000) {
                             lastPortraitTileDiag = nowMs
                             VirtualLauncher.logSink?.invoke(
-                                "COMPOSER: 竖屏 tile 绘制 tileH=$tileH handleEdge=$handleEdge " +
+                                "COMPOSER: portrait tile drawn tileH=$tileH handleEdge=$handleEdge " +
                                     "slide=$slide frames=${map!!.frameCount}",
                             )
                         }
@@ -614,7 +614,7 @@ class DualDisplayComposer(
                     if (nowMs - lastPortraitTileDiag > 5_000) {
                         lastPortraitTileDiag = nowMs
                         VirtualLauncher.logSink?.invoke(
-                            "COMPOSER: 竖屏 tile 未画 layout=$layoutP " +
+                            "COMPOSER: portrait tile not drawn layout=$layoutP " +
                                 "mapInput=${map != null} hasContent=${map?.hasContent} " +
                                 "frames=${map?.frameCount} dash=${launcherDashHint()}",
                         )
@@ -800,7 +800,7 @@ class DualDisplayComposer(
             val status = IntArray(1)
             GLES20.glGetShaderiv(shader, GLES20.GL_COMPILE_STATUS, status, 0)
             if (status[0] == 0) {
-                Log.e(TAG, "GLSL 编译失败（type=$type）：${GLES20.glGetShaderInfoLog(shader)}")
+                Log.e(TAG, "GLSL compile failed (type=$type): ${GLES20.glGetShaderInfoLog(shader)}")
                 GLES20.glDeleteShader(shader)
                 throw IllegalStateException("GLSL compile type=$type")
             }
@@ -829,7 +829,7 @@ class DualDisplayComposer(
         stage: String,
     ) {
         if (!ok) {
-            Log.e(TAG, "EGL 失败：$stage")
+            Log.e(TAG, "EGL failed: $stage")
             throw IllegalStateException("EGL $stage")
         }
     }

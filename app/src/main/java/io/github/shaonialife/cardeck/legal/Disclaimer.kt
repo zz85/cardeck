@@ -79,9 +79,9 @@ internal fun disclaimerBlockReason(
 ): String? =
     when {
         !countdownDone && contentScrollable && !scrolledToBottom ->
-            "请滑动阅读至底部，并等待 $remainingSeconds 秒"
+            "Scroll to the bottom and wait ${remainingSeconds}s"
 
-        !countdownDone -> "请等待 $remainingSeconds 秒后接受"
-        contentScrollable && !scrolledToBottom -> "请滑动阅读至底部"
+        !countdownDone -> "Wait ${remainingSeconds}s to accept"
+        contentScrollable && !scrolledToBottom -> "Scroll to the bottom to accept"
         else -> null
     }

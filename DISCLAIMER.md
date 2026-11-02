@@ -1,90 +1,107 @@
-# 免责声明 / Disclaimer
+# Disclaimer
 
-> 本文件与 App 内首次启动时展示的免责声明同源。App 内声明为中文正文，
-> 本文件作为仓库层面的补充，供下载、分发、二次分发时一并向使用者提供。
+> This file shares the same source as the disclaimer shown in the app on first launch. The in-app
+> disclaimer is the main text; this file supplements it at the repository level and should be provided
+> to users along with any download, distribution or redistribution.
 
-## 非官方声明
+## Unofficial status
 
-本项目（下称「本应用」）是一个**非官方的个人实验性项目**，与 Apple Inc.、
-任何汽车制造商及其关联公司**均无关联**，未获得任何形式的授权、认证或背书。
+This project (the "App") is an **unofficial, personal experimental project**. It is **not affiliated**
+with Apple Inc., any car manufacturer or any of their affiliates, and has not received any form of
+authorization, certification or endorsement.
 
-本应用**不是** MFi（Made for iPhone）认证产品，也不属于 Apple 的 CarPlay 生态官方实现。
+The App is **not** an MFi (Made for iPhone) certified product, nor is it an official implementation
+within Apple's CarPlay ecosystem.
 
-## 商标归属
+## Trademarks
 
-- **CarPlay** 是 Apple Inc. 的商标。
-- **AirPlay** 是 Apple Inc. 的商标。
-- 本应用名称「CarDeck」不含上述任何商标；文中出现 CarPlay / AirPlay 字样，
-  **仅用于说明本应用的兼容目标**（即：本应用尝试以发送端身份与支持 CarPlay
-  的接收端通信），属描述性引用，不表示任何关联、赞助或认可。
-- 本项目**不使用** Apple、任何汽车厂商的图形标识（logo、图标、认证标等）。
-- 其他文中提及的产品名称、商标均为其各自所有者的财产。
+- **CarPlay** is a trademark of Apple Inc.
+- **AirPlay** is a trademark of Apple Inc.
+- The App's name, "CarDeck", does not contain any of the above trademarks. Wherever the words
+  CarPlay / AirPlay appear, they are used **only to describe the App's compatibility target** (i.e. the
+  App attempts to communicate, acting as a sender, with receivers that support CarPlay). This is a
+  descriptive reference and does not imply any affiliation, sponsorship or approval.
+- This project **does not use** any graphical marks (logos, icons, certification marks, etc.) of Apple
+  or any car manufacturer.
+- All other product names and trademarks mentioned are the property of their respective owners.
 
-## 驾驶安全警告
+## Driving safety warning
 
-**本应用不是安全关键系统，不能替代车辆原厂导航与仪表。**
+**The App is not a safety-critical system and cannot replace the vehicle's factory navigation or
+instrument cluster.**
 
-- 请在**停车状态**下完成连接、配对与全部设置；
-- 行驶过程中如需操作，必须由车上的乘客进行，驾驶员不得手持或操作手机；
-- 无线链路可能因信号干扰、系统休眠、热点切换、蓝牙重连等原因**随时中断**，
-  表现为画面冻结、黑屏、触摸失灵或导航中断；
-- 行驶中断连可能导致错过路口、路线丢失或注意力分散。
-  请始终以车机原厂导航作为安全冗余。
+- Complete connecting, pairing and all settings **while parked**;
+- Any operation while driving must be done by a passenger; the driver must not hold or operate the
+  phone;
+- The wireless link may **drop at any time** due to signal interference, system sleep, hotspot
+  switching, Bluetooth reconnection and other causes, resulting in a frozen picture, black screen,
+  unresponsive touch or interrupted navigation;
+- A disconnect while driving may cause you to miss a turn, lose your route or become distracted.
+  Always keep the head unit's factory navigation as a safety backup.
 
-## 已测试范围
+## Tested scope
 
-本应用仅在下列组合上验证过：
+The App has only been verified with the following combinations:
 
-| 角色 | 设备 |
+| Role | Device |
 |---|---|
-| 发送端 | 荣耀 Magic7 Pro（Android 17） |
-| 接收端 | 奥迪 MIB3 车机（真车） |
-| 接收端 | Redmi K40 上的 DiPlay 测试台（Android 13） |
+| Sender | Honor Magic7 Pro (Android 17) |
+| Receiver | Audi MIB3 head unit (real car) |
+| Receiver | DiPlay test bench on a Redmi K40 (Android 13) |
 
-**其他手机、其他 Android 版本、其他车型均未验证**，可能完全无法工作，也可能
-出现画面异常、触摸错位或反复断连。「应用横屏」功能需要 Android 14 及以上系统，
-Android 13 及更早机型该功能不可用。
+**Other phones, other Android versions and other car models are unverified.** They may not work at
+all, or may show display glitches, misaligned touch or repeated disconnects. The "Force landscape"
+feature requires Android 14 or later; it is unavailable on Android 13 and earlier.
 
-## 系统权限说明
+## System permissions
 
-本应用为实现功能会请求并使用以下能力：
+To provide its features, the App requests and uses the following capabilities:
 
-- **Shizuku（shell 权限）**：创建受信虚拟屏、注入触摸事件、写入系统兼容性设置
-  （如强制应用横屏）、读取窗口与显示状态。不会执行与本应用服务无关的命令。
-  Shizuku 是独立第三方开源项目（[官网](https://shizuku.rikka.app/) /
-  [GitHub](https://github.com/RikkaApps/Shizuku)），其权限授予范围与安全边界
-  由你自行在 Shizuku 中管理；本应用只获得 shell 身份能做的事，不额外提权。
-- **通知使用权 / 媒体会话**：仅在车机桌面显示当前播放的音乐信息。
-- **蓝牙**：与接收端配对（只配对，不建立蓝牙音频连接）。
-- **屏幕录制（投屏）授权**：仅在开启「车机侧声音」时用于捕获音频。
+- **Shizuku (shell permission)**: creating trusted virtual displays, injecting touch events, writing
+  system compatibility settings (e.g. forcing apps into landscape), and reading window and display
+  state. It will not run commands unrelated to the App's functions.
+  Shizuku is an independent third-party open-source project ([website](https://shizuku.rikka.app/) /
+  [GitHub](https://github.com/RikkaApps/Shizuku)); the scope of its granted permissions and its
+  security boundaries are managed by you in Shizuku. The App only gets what the shell identity can do
+  and does not escalate privileges further.
+- **Notification access / media sessions**: used only to show the currently playing music on the
+  head-unit home screen.
+- **Bluetooth**: pairing with the receiver (pairing only; no Bluetooth audio connection is established).
+- **Screen recording (projection) permission**: used only to capture audio when car audio is turned on.
 
-配对信息、目标设备名称、壁纸与设置项仅保存在本机，不上传至任何服务器；
-本应用不含统计分析或广告 SDK。
+Pairing info, target device names, wallpapers and settings are stored only on this device and are never
+uploaded to any server; the App contains no analytics or advertising SDKs.
 
-## 免责条款
+## Disclaimer of liability
 
-本应用按「现状」提供，不附带任何明示或默示的担保，包括但不限于适销性、
-特定用途适用性与不侵权担保。
+The App is provided "as is", without warranty of any kind, express or implied, including but not
+limited to the warranties of merchantability, fitness for a particular purpose and non-infringement.
 
-在适用法律允许的最大范围内，作者与贡献者不对因使用或无法使用本应用而产生的
-任何直接或间接损失承担责任，包括但不限于：连接中断、导航或通话中断、数据丢失、
-设备异常、车辆系统异常，以及因驾驶中操作或分心导致的事故与损失。
+To the maximum extent permitted by applicable law, the authors and contributors shall not be liable for
+any direct or indirect loss arising from the use of or inability to use the App, including but not
+limited to: dropped connections, interrupted navigation or calls, data loss, device malfunctions,
+vehicle system malfunctions, and accidents and losses caused by operating the phone or being distracted
+while driving.
 
-是否使用本应用、如何配置与操作、以及在何种场景下使用，完全由使用者自行判断
-并自行承担风险。若不同意上述任何一条，请停止使用并卸载本应用。
+Whether to use the App, how to configure and operate it, and in what situations to use it are entirely
+the user's own judgment and at the user's own risk. If you do not agree with any of the above, stop
+using and uninstall the App.
 
-## 第三方代码与许可
+## Third-party code and licenses
 
-- 本仓库 `reference/` 目录（若存在）为**本地参考资料**，已在 `.gitignore` 中排除，
-  不会随本仓库分发。其中参考项目（xcertplay / DiPlay 为 GPL-3.0 等）的源码
-  及许可义务不适用于本仓库。
-- 本项目为独立实现，仅参考公开的协议格式与公开研究成果。
-- **请勿分发从任何固件或设备中提取的密钥、证书或私有素材。**
+- The `reference/` directory of this repository (if present) contains **local reference material**; it
+  is excluded in `.gitignore` and is not distributed with this repository. The source code and license
+  obligations of the reference projects in it (xcertplay / DiPlay are GPL-3.0, etc.) do not apply to
+  this repository.
+- This project is an independent implementation that only refers to publicly available protocol formats
+  and published research.
+- **Do not distribute keys, certificates or proprietary material extracted from any firmware or
+  device.**
 
-## 许可证
+## License
 
-本应用源码以 [MIT License](LICENSE) 发布。
+The App's source code is released under the [MIT License](LICENSE).
 
 ---
 
-*最后更新：2026-10-18*
+*Last updated: 2026-10-18*

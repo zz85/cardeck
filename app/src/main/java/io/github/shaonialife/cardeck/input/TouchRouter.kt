@@ -122,8 +122,8 @@ object TouchRouter {
             // 首次以及每 200 次报一条：真机上每秒几十次触摸，逐条刷会淹没日志
             if (failStreak == 1 || failStreak % 200 == 0) {
                 diag(
-                    "注入服务不可用（连续 $failStreak 次，后台重绑中；" +
-                        "若持续失效请打开 Shizuku App 或在系统设置中允许其后台运行）",
+                    "Injection service unavailable ($failStreak in a row, rebinding in background; " +
+                        "if it persists, open the Shizuku app or allow it to run in the background in system settings)",
                 )
             }
             return
@@ -212,7 +212,7 @@ object TouchRouter {
             }
         }
         if (targetDisplay < 0) {
-            diag("目标屏无效 dock=${launcher.dockDisplayId} app=${launcher.appDisplayId}")
+            diag("Invalid target display dock=${launcher.dockDisplayId} app=${launcher.appDisplayId}")
             return
         }
         // MOVE 节流：同屏的连续 move 间隔不足时合并丢弃（状态机不动，最新位置
@@ -234,7 +234,7 @@ object TouchRouter {
             throttledCount++
             if (nowMs - lastThrottleLogAt > 5_000) {
                 logSink?.invoke(
-                    "TOUCH: move 节流 ${moveThrottleMs}ms 生效——累计合并 $throttledCount 次",
+                    "TOUCH: move throttle ${moveThrottleMs}ms active - merged $throttledCount so far",
                 )
                 throttledCount = 0
                 lastThrottleLogAt = nowMs
@@ -267,14 +267,14 @@ object TouchRouter {
             if (ok) lastInjectAt = nowMs
             if (!ok) {
                 diag(
-                    "注入被拒 disp=$targetDisplay ($localX,$localY) " +
+                    "Injection rejected disp=$targetDisplay ($localX,$localY) " +
                         "down=${contact.down} pressed=$pressed pressedDisplay=$pressedDisplay",
                 )
             } else if (contact.down) {
-                diag("注入OK disp=$targetDisplay ($localX,$localY)")
+                diag("Injection OK disp=$targetDisplay ($localX,$localY)")
             }
         } catch (e: Exception) {
-            diag("注入异常：${e.message}")
+            diag("Injection error: ${e.message}")
         }
 
         // 仪表盘模式：地图 tile 的触摸同时喂给「点按 → 全屏地图」检测器
@@ -369,7 +369,7 @@ object TouchRouter {
                         Runnable {
                             tapConfirm = null
                             if (launcher.dashboardMode && !launcher.mapFullscreen) {
-                                logSink?.invoke("LAUNCHER: 地图卡片点按 → 全屏地图")
+                                logSink?.invoke("LAUNCHER: map card tapped → full-screen map")
                                 launcher.setMapFullscreen(true)
                             }
                         }

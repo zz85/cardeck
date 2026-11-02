@@ -189,12 +189,12 @@ class AudioSender(
             // 此时手机继续外放——必须让日志能直接看出来
             val after = manager.getStreamVolume(android.media.AudioManager.STREAM_MUSIC)
             log(
-                "AUDIO: 已静音手机媒体输出（原音量 ${if (restoreTarget > 0) restoreTarget else "未知"}，" +
-                    "断开后恢复）——回读音量=$after" +
-                    if (after != 0) "（⚠ 静音未生效，手机仍会外放）" else "",
+                "AUDIO: muted phone media output (original volume ${if (restoreTarget > 0) restoreTarget else "unknown"}, " +
+                    "restored on disconnect) - readback volume=$after" +
+                    if (after != 0) " (⚠ mute didn't take effect, phone will still play aloud)" else "",
             )
         } catch (error: Exception) {
-            log("AUDIO: 静音手机媒体失败 - ${error.message}")
+            log("AUDIO: muting phone media failed - ${error.message}")
         }
     }
 
@@ -216,9 +216,9 @@ class AudioSender(
                     target,
                     0,
                 )
-                log("AUDIO: 已恢复手机媒体音量（$target）")
+                log("AUDIO: phone media volume restored ($target)")
             } else {
-                log("AUDIO: 无有效原音量记录，手机媒体保持当前值（请按音量键调整）")
+                log("AUDIO: no valid original volume recorded, phone media left as is (adjust with volume keys)")
             }
             prefs.edit().remove(KEY_SAVED_VOLUME).apply()
         } catch (_: Exception) {
@@ -265,7 +265,7 @@ class AudioSender(
                     .setBufferSizeInBytes(framePcmBytes * 8)
                     .build()
             if (recorder.state != AudioRecord.STATE_INITIALIZED) {
-                log("AUDIO: AudioRecord 初始化失败（state=${recorder.state}）")
+                log("AUDIO: AudioRecord init failed (state=${recorder.state})")
                 runCatching { recorder.release() }
                 aacEncoder?.stop()
                 aacEncoder = null
@@ -277,13 +277,13 @@ class AudioSender(
             running.set(true)
             mutePhoneMedia()
             log(
-                "AUDIO: 已启动（播放捕获 ${sampleRate}Hz 立体声 → $host:$dataPort，" +
-                    "通路=t$streamType/${codec.name}，" +
+                "AUDIO: started (playback capture ${sampleRate}Hz stereo → $host:$dataPort, " +
+                    "path=t$streamType/${codec.name}, " +
                     if (codec == AudioCodec.AAC_LC) {
-                        "每包 1 个 AAC 帧（${AacLcEncoder.FRAME_SAMPLES} 采样" +
-                            (if (adtsFrames) "，ADTS 封装））" else "，裸帧））")
+                        "1 AAC frame per packet (${AacLcEncoder.FRAME_SAMPLES} samples" +
+                            (if (adtsFrames) ", ADTS framed))" else ", raw frames))")
                     } else {
-                        "每包 ${SAMPLES_PER_PACKET} 帧 PCM）"
+                        "${SAMPLES_PER_PACKET} PCM frames per packet)"
                     },
             )
 
@@ -295,7 +295,7 @@ class AudioSender(
                     try {
                         recorder.startRecording()
                     } catch (error: Exception) {
-                        log("AUDIO: 启动采集失败 - ${error.message}")
+                        log("AUDIO: capture start failed - ${error.message}")
                         stop()
                         return@Thread
                     }
@@ -309,7 +309,7 @@ class AudioSender(
             }
             true
         } catch (error: Exception) {
-            log("AUDIO: 启动失败 - ${error.message}")
+            log("AUDIO: start failed - ${error.message}")
             stop()
             false
         }
@@ -337,7 +337,7 @@ class AudioSender(
         syncThread = null
         thread = null
         restorePhoneMedia()
-        log("AUDIO: 已停止（共发 $packetsSent 包 / ${bytesSent / 1024}KB）")
+        log("AUDIO: stopped (sent $packetsSent packets / ${bytesSent / 1024}KB)")
     }
 
     /** 捕获配置：媒体/游戏/导航等常见播放用途（逐项添加，个别用途被系统拒绝时跳过）。 */
@@ -359,18 +359,18 @@ class AudioSender(
 
     private fun startSyncLoop() {
         if (controlPort <= 0) {
-            log("AUDIO: 车机未下发 controlPort——不发同步包（只能靠音频包自带时间戳）")
+            log("AUDIO: head unit gave no controlPort - not sending sync packets (relying on audio packet timestamps)")
             return
         }
         val client =
             try {
                 DatagramSocket().apply { connect(InetAddress.getByName(host), controlPort) }
             } catch (error: Exception) {
-                log("AUDIO: 同步包套接字创建失败 - ${error.message}")
+                log("AUDIO: sync packet socket creation failed - ${error.message}")
                 return
             }
         syncSocket = client
-        log("AUDIO: 同步包已启用 → $host:$controlPort（每 ${SYNC_INTERVAL_MILLIS}ms 一个，建立 RTP↔NTP 锚点）")
+        log("AUDIO: sync packets enabled → $host:$controlPort (one every ${SYNC_INTERVAL_MILLIS}ms, RTP↔NTP anchor)")
         val worker =
             Thread(
                 {
@@ -387,14 +387,14 @@ class AudioSender(
                             if (first) {
                                 first = false
                                 log(
-                                    "AUDIO: 首个同步包已发出（X 位=1）ts=$current→$next——" +
-                                        "车机若仍无声，说明它没在等这个锚点",
+                                    "AUDIO: first sync packet sent (X bit=1) ts=$current→$next - " +
+                                        "if the car is still silent, it isn't waiting for this anchor",
                                 )
                             }
                             Thread.sleep(SYNC_INTERVAL_MILLIS)
                         }
                     } catch (error: Exception) {
-                        if (running.get()) log("AUDIO: 同步包发送停止 - ${error.message}")
+                        if (running.get()) log("AUDIO: sync packet sending stopped - ${error.message}")
                     }
                 },
                 "audio-sync",
@@ -418,13 +418,13 @@ class AudioSender(
                     try {
                         recorder.read(pcm, 0, pcm.size, AudioRecord.READ_BLOCKING)
                     } catch (error: Exception) {
-                        log("AUDIO: 采集读取异常 - ${error.message}")
+                        log("AUDIO: capture read error - ${error.message}")
                         break
                     }
                 if (read < 0) {
                     readFailures++
                     if (readFailures == 1 || readFailures % 100 == 0) {
-                        log("AUDIO: 采集错误码 $read（连续 $readFailures 次）")
+                        log("AUDIO: capture error code $read ($readFailures in a row)")
                     }
                     if (readFailures > 500) break
                     Thread.sleep(READ_TIMEOUT_QUIET_MILLIS)
@@ -449,8 +449,8 @@ class AudioSender(
                     }
                     val percent = nonZero * 100 / (read / 2).coerceAtLeast(1)
                     log(
-                        "AUDIO: 采集样本 seq=$sequence 非零$percent% 峰值=$peak" +
-                            if (peak == 0) "（⚠ 全零：捕获不到音频——app 可能禁止播放捕获或音频走了蓝牙）" else "",
+                        "AUDIO: capture samples seq=$sequence nonzero=$percent% peak=$peak" +
+                            if (peak == 0) " (⚠ all zero: no audio captured - app may block capture or audio goes via Bluetooth)" else "",
                     )
                 }
 
@@ -484,14 +484,14 @@ class AudioSender(
                 if (now - lastLogAt >= 30_000L) {
                     lastLogAt = now
                     log(
-                        "AUDIO: 推流中（累计 $packetsSent 包，${bytesSent / 1024}KB，" +
-                            "seq=$sequence ts=$timestamp）",
+                        "AUDIO: streaming (total $packetsSent packets, ${bytesSent / 1024}KB, " +
+                            "seq=$sequence ts=$timestamp)",
                     )
                 }
             }
         } catch (error: Throwable) {
             // 后台线程未捕获异常会杀死整个进程——音频异常绝不允许冒泡
-            log("AUDIO: 采集线程异常退出 - ${error.message}")
+            log("AUDIO: capture thread exited abnormally - ${error.message}")
         } finally {
             stop()
         }
@@ -511,7 +511,7 @@ class AudioSender(
             bytesSent += wire.size
             true
         } catch (error: IOException) {
-            log("AUDIO: UDP 发送失败 - ${error.message}")
+            log("AUDIO: UDP send failed - ${error.message}")
             false
         }
     }
@@ -524,20 +524,20 @@ class AudioSender(
                 try {
                     val result = AacLcEncoder.decodePeak(payload, sampleRate, CHANNELS)
                     if (result == null) {
-                        log("AUDIO: 自检 = 本机解码器没解出样本（首帧 ${payload.size}B）——无法证伪，继续推流")
+                        log("AUDIO: self-check = local decoder got no samples (first frame ${payload.size}B) - inconclusive, streaming on")
                         return@Thread
                     }
                     val (peak, samples) = result
                     log(
-                        "AUDIO: 自检 = 首帧 ${payload.size}B 本机解码 $samples 个样本，峰值 $peak" +
+                        "AUDIO: self-check = first frame ${payload.size}B decoded locally to $samples samples, peak $peak" +
                             if (peak > 0) {
-                                "（✓ 比特流有效且非静音：车机若无声，问题不在编码/加密）"
+                                " (✓ bitstream valid and not silent: if the car is silent, it's not encoding/encryption)"
                             } else {
-                                "（⚠ 解码为全零：AAC 编码器输出的是静音数据）"
+                                " (⚠ decoded to all zeros: AAC encoder is outputting silence)"
                             },
                     )
                 } catch (error: Exception) {
-                    log("AUDIO: 自检解码异常 - ${error.message}")
+                    log("AUDIO: self-check decode error - ${error.message}")
                 }
             },
             "audio-selfcheck",

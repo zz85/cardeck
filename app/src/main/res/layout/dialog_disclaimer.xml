@@ -14,7 +14,7 @@
     <TextView
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:text="免责声明"
+        android:text="Disclaimer"
         android:textColor="@color/m3_on_surface"
         android:textSize="17sp"
         android:textStyle="bold" />
@@ -24,7 +24,7 @@
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_marginTop="4dp"
-        android:text="首次使用前请完整阅读。接受后可在主界面底部随时重看。"
+        android:text="Please read in full before first use. After accepting, you can reread it any time from the bottom of the main screen."
         android:textColor="@color/m3_on_var"
         android:textSize="11.5sp" />
 
@@ -71,7 +71,7 @@
             android:layout_weight="1"
             android:background="@drawable/bg_tbtn"
             android:gravity="center"
-            android:text="放弃使用"
+            android:text="Decline"
             android:textColor="@color/m3_on_var"
             android:textSize="13.5sp"
             android:textStyle="bold" />

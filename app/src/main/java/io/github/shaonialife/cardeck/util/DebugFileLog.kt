@@ -37,7 +37,7 @@ object DebugFileLog {
      * 历史轮次的日志会把真正有用的部分淹没——导出默认只取最后一条标记之后的内容。
      * 标记本身写进文件而不是只记内存偏移：文件可能被 2MB 截断，偏移会失效。
      */
-    const val SESSION_MARKER = "===== CarDeck 进程启动（本次日志起点）====="
+    const val SESSION_MARKER = "===== CarDeck process start (log session begins) ====="
 
     /**
      * 写入本次启动标记。由 [io.github.shaonialife.cardeck.SenderApp.onCreate] 调用一次；

@@ -34,26 +34,26 @@ concurrency:
 
 jobs:
   build:
-    name: 构建正式签名 APK
+    name: Build release-signed APK
     runs-on: ubuntu-latest
     timeout-minutes: 40
     steps:
-      - name: 检出代码
+      - name: Check out code
         uses: actions/checkout@v4
 
       # AGP 8.7 要求 JDK 17，且与 app/build.gradle.kts 的 jvmTarget 一致
-      - name: 安装 JDK 17
+      - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
 
-      - name: 配置 Gradle
+      - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
 
       # build.gradle.kts 用 rootProject.file(storeFile) 解析，所以 .jks 与
       # keystore.properties 都放仓库根（两者都已 gitignore，不会被提交）
-      - name: 写入签名配置
+      - name: Write signing config
         env:
           KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
@@ -67,7 +67,7 @@ jobs:
             if [ -z "${!v:-}" ]; then MISSING="$MISSING $v"; fi
           done
           if [ -n "$MISSING" ]; then
-            echo "::error::缺少仓库 Secrets:$MISSING。到 ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/settings/secrets/actions 添加（KEYSTORE_BASE64 生成：PowerShell [Convert]::ToBase64String([IO.File]::ReadAllBytes('keystore.jks'))）。本流水线只出正式签名包，不会退回 debug 签名。"
+            echo "::error::Missing repository secrets:${MISSING}. Add them at ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/settings/secrets/actions (generate KEYSTORE_BASE64 with PowerShell: [Convert]::ToBase64String([IO.File]::ReadAllBytes('keystore.jks'))). This pipeline only produces release-signed builds and never falls back to debug signing."
             exit 1
           fi
           # 允许粘贴多行 base64（Windows 复制常见），解码前先去掉换行
@@ -78,26 +78,26 @@ jobs:
             echo "keyAlias=$KEY_ALIAS"
             echo "keyPassword=$KEY_PASSWORD"
           } > keystore.properties
-          echo "签名材料已就绪（release.jks + keystore.properties）"
+          echo "Signing material ready (release.jks + keystore.properties)"
 
-      - name: 计算版本号
+      - name: Compute version
         id: version
         run: |
           set -eu
           BASE=$(sed -n 's/^val appVersionName = "\(.*\)"/\1/p' app/build.gradle.kts)
-          test -n "$BASE" || { echo "::error::无法从 app/build.gradle.kts 读取 appVersionName"; exit 1; }
+          test -n "$BASE" || { echo "::error::Could not read appVersionName from app/build.gradle.kts"; exit 1; }
           VERSION="${BASE}.${GITHUB_RUN_NUMBER}"
           echo "base=$BASE" >> "$GITHUB_OUTPUT"
           echo "name=$VERSION" >> "$GITHUB_OUTPUT"
-          echo "本次版本：$VERSION（versionCode = base*10000 + ${GITHUB_RUN_NUMBER}）"
+          echo "Version: ${VERSION} (versionCode = base*10000 + ${GITHUB_RUN_NUMBER})"
 
       # 版本号由 build.gradle.kts 按同一规则计算（见文件里的 buildNumber），这里只传 run_number
-      - name: 构建 Release APK
+      - name: Build release APK
         env:
           BUILD_NUMBER: ${{ github.run_number }}
         run: ./gradlew :app:assembleRelease "-Pcardeck.buildNumber=$BUILD_NUMBER" --stacktrace
 
-      - name: 校验签名并打包
+      - name: Verify signature and package
         id: package
         env:
           VERSION: ${{ steps.version.outputs.name }}
@@ -105,29 +105,29 @@ jobs:
         run: |
           set -eu
           APK=app/build/outputs/apk/release/app-release.apk
-          test -f "$APK" || { echo "::error::未找到 $APK"; exit 1; }
+          test -f "$APK" || { echo "::error::$APK not found"; exit 1; }
 
           SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
           APKSIGNER=$(ls "$SDK"/build-tools/*/apksigner 2>/dev/null | sort -V | tail -n1)
-          test -n "$APKSIGNER" || { echo "::error::找不到 apksigner"; exit 1; }
+          test -n "$APKSIGNER" || { echo "::error::apksigner not found"; exit 1; }
           "$APKSIGNER" verify --print-certs "$APK" | tee certs.txt
 
           # 配了 keystore 却仍是 debug 证书 = keystore.properties 没被读到，绝不能放出去
           if grep -q "CN=Android Debug" certs.txt; then
-            echo "::error::产物是 debug 签名——正式签名配置没有生效（检查 keystore.properties 与 storeFile 路径）"
+            echo "::error::Output is debug-signed - release signing config did not take effect (check keystore.properties and the storeFile path)"
             exit 1
           fi
           CERT=$(grep "certificate SHA-256 digest" certs.txt | head -n1 | sed 's/.*digest: //')
-          test -n "$CERT" || { echo "::error::读不到签名证书指纹"; exit 1; }
+          test -n "$CERT" || { echo "::error::Could not read signing certificate fingerprint"; exit 1; }
 
           if [ -n "${EXPECTED_CERT:-}" ]; then
             EXPECTED=$(printf '%s' "$EXPECTED_CERT" | tr -d ': ' | tr 'A-F' 'a-f')
             ACTUAL=$(printf '%s' "$CERT" | tr -d ': ' | tr 'A-F' 'a-f')
             if [ "$EXPECTED" != "$ACTUAL" ]; then
-              echo "::error::签名证书与 EXPECTED_CERT_SHA256 不一致：期望 $EXPECTED，实际 $ACTUAL"
+              echo "::error::Signing certificate does not match EXPECTED_CERT_SHA256: expected ${EXPECTED}, actual ${ACTUAL}"
               exit 1
             fi
-            echo "签名证书与 EXPECTED_CERT_SHA256 一致"
+            echo "Signing certificate matches EXPECTED_CERT_SHA256"
           fi
 
           NAME="CarDeck-${VERSION}-release.apk"
@@ -140,9 +140,9 @@ jobs:
             echo "cert=$CERT"
             echo "size=$SIZE"
           } >> "$GITHUB_OUTPUT"
-          echo "已生成 $NAME（$SIZE）"
+          echo "Generated ${NAME} (${SIZE})"
 
-      - name: 上传 APK
+      - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: ${{ steps.package.outputs.name }}
@@ -151,7 +151,7 @@ jobs:
           retention-days: 30
           overwrite: 'true' # 重跑同一 run 时版本号不变，覆盖旧产物而不是失败
 
-      - name: 写入运行摘要
+      - name: Write run summary
         env:
           VERSION: ${{ steps.version.outputs.name }}
           NAME: ${{ steps.package.outputs.name }}
@@ -161,26 +161,26 @@ jobs:
         run: |
           set -eu
           {
-            echo "### CarDeck ${VERSION}（正式签名）"
+            echo "### CarDeck ${VERSION} (release-signed)"
             echo
-            echo "| 项 | 值 |"
+            echo "| Item | Value |"
             echo "|---|---|"
             echo "| APK | ${NAME} |"
-            echo "| APK 大小 | ${SIZE} |"
+            echo "| APK size | ${SIZE} |"
             echo "| SHA-256 | ${SHA} |"
-            echo "| 签名证书 SHA-256 | ${CERT} |"
+            echo "| Signing cert SHA-256 | ${CERT} |"
             echo
-            echo "安装：adb install -r ${NAME}"
+            echo "Install: adb install -r ${NAME}"
             echo
-            echo "> Artifacts 列表里显示的体积是**压缩包**大小（dex 在 APK 内不压缩，再打包会缩到约 45%）；"
-            echo "> 解压后的 APK 体积见上表。"
+            echo "> The size shown in the Artifacts list is the **zip archive** size (dex is stored uncompressed in the APK, so re-zipping shrinks it to ~45%);"
+            echo "> see the table above for the unzipped APK size."
           } >> "$GITHUB_STEP_SUMMARY"
 
       # 放在出包之后：单测挂了本次运行标红，但 APK 仍可下载
-      - name: 单元测试
+      - name: Unit tests
         run: ./gradlew :app:testDebugUnitTest --stacktrace
 
-      - name: 上传测试报告（失败时便于定位）
+      - name: Upload test reports (for debugging failures)
         if: failure()
         uses: actions/upload-artifact@v4
         with:

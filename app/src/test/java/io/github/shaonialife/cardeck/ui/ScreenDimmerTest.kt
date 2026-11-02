@@ -18,7 +18,7 @@ class ScreenDimmerTest {
     @Test
     fun autoDimRequiresActiveSession() {
         assertFalse(
-            "会话结束后绝不能再弹暗幕（本次 bug）",
+            "Must never show the dim overlay after the session ends (this bug)",
             ScreenDimmer.shouldAutoDim(enabled = true, sessionActive = false, attached = true),
         )
         assertTrue(
@@ -53,7 +53,7 @@ class ScreenDimmerTest {
         cases.forEach { (input, expected) ->
             val (enabled, session, attached) = input
             assertTrue(
-                "enabled=$enabled session=$session attached=$attached 期望 $expected",
+                "enabled=$enabled session=$session attached=$attached expected $expected",
                 ScreenDimmer.shouldAutoDim(enabled, session, attached) == expected,
             )
         }

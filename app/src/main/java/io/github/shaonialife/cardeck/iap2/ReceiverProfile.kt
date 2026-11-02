@@ -87,12 +87,12 @@ object ReceiverProfile {
             when {
                 pairing == null -> Era.UNKNOWN
                 !pairing -> {
-                    reasons += "features(${signals.features?.let { "0x${it.toString(16)}" } ?: "?"}) 无 bit38=HK_PAIRING_AND_ENCRYPT"
+                    reasons += "features(${signals.features?.let { "0x${it.toString(16)}" } ?: "?"}) lacks bit38=HK_PAIRING_AND_ENCRYPT"
                     Era.PRE_HOMEKIT
                 }
 
                 else -> {
-                    reasons += "features bit38=HK_PAIRING_AND_ENCRYPT 已声明"
+                    reasons += "features bit38=HK_PAIRING_AND_ENCRYPT declared"
                     Era.MODERN
                 }
             }
@@ -100,19 +100,19 @@ object ReceiverProfile {
         if (era != Era.PRE_HOMEKIT && signals.srcvers != null) {
             // 先验提示（不改变判定）：老版本号 + 未声明配对 → v280 可选配对档
             val v = signals.srcvers.toDoubleOrNull()?.let { (it * 100).toInt() } ?: 0
-            if (v in 1..36599 && era == Era.UNKNOWN) reasons += "srcvers 提示 v280 可选配对档（仅先验）"
+            if (v in 1..36599 && era == Era.UNKNOWN) reasons += "srcvers hints v280 optional-pairing tier (prior only)"
         }
 
         val wifiGen =
             when {
                 signals.sendIds == null && signals.receiveIds == null -> {
-                    reasons += "0x1D01 未提供收/发清单"
+                    reasons += "0x1D01 gave no receive/send lists"
                     WifiGen.UNKNOWN
                 }
 
                 signals.sendIds?.contains(Iap2MessageIds.ACCESSORY_WIFI_CONFIGURATION) == true ||
                     signals.receiveIds?.contains(Iap2MessageIds.REQUEST_ACCESSORY_WIFI_CONFIGURATION) == true -> {
-                    reasons += "清单声明 0x5703/0x5702（旧协议在场）"
+                    reasons += "lists declare 0x5703/0x5702 (legacy protocol present)"
                     WifiGen.LEGACY
                 }
 
@@ -121,12 +121,13 @@ object ReceiverProfile {
                     // 不能仅凭「未声明」判新：奥迪清单只列 CarPlay 生命周期消息（实测
                     // 发送清单 2 项/可收 5 项，均无 0x57xx），但旧协议工作正常——
                     // 稀疏清单不算数，保守 UNKNOWN 走旧协议（0x5703 有超时兜底）
-                    reasons += "清单完整（${(signals.sendIds?.size ?: 0) + (signals.receiveIds?.size ?: 0)} 项）仍无 0x5703/0x5702——AP 信息由 0x4301 提供"
+                    reasons += "lists complete (${(signals.sendIds?.size ?: 0) + (signals.receiveIds?.size ?: 0)} items) " +
+                        "yet no 0x5703/0x5702 - AP info provided by 0x4301"
                     WifiGen.NEW
                 }
 
                 (signals.sendIds != null || signals.receiveIds != null) -> {
-                    reasons += "清单稀疏且未声明 0x5703/0x5702——不构成「新协议」证据，保守按旧协议（超时兜底）"
+                    reasons += "lists sparse, no 0x5703/0x5702 - not evidence of \"new protocol\", conservatively legacy (timeout fallback)"
                     WifiGen.UNKNOWN
                 }
 
@@ -146,5 +147,5 @@ object ReceiverProfile {
     /** 一行可读判定（进文件日志）。 */
     fun describe(profile: Profile): String =
         "PROFILE: era=${profile.era} wifiGen=${profile.wifiGen} key=${MfiLengthMemory.receiverKey(profile.identityKey)}" +
-            " 依据[" + profile.reasons.joinToString("；") + "]"
+            " reasons[" + profile.reasons.joinToString("; ") + "]"
 }

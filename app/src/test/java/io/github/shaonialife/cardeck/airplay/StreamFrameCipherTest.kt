@@ -30,12 +30,12 @@ class StreamFrameCipherTest {
 
         val trailer = data.size - 32
         val width = data[trailer + 6].toInt() and 0xFF
-        assertTrue("多对象应使用多字节偏移表（width=$width）", width > 1)
+        assertTrue("multiple objects should use a multi-byte offset table (width=$width)", width > 1)
         val count = readUint(data, trailer + 8, 8).toInt()
         val root = readUint(data, trailer + 16, 8).toInt()
         val table = readUint(data, trailer + 24, 8).toInt()
         val rootOffset = readUint(data, table + root * width, width).toInt()
-        assertEquals("CarPlay 210.81 直接读字节 8", 8, rootOffset)
+        assertEquals("CarPlay 210.81 reads byte 8 directly", 8, rootOffset)
 
         // 重排后仍必须能被标准解析器读回（偏移表修正正确）
         val decoded = BinaryPlist.parse(data) as Map<*, *>

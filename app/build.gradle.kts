@@ -39,10 +39,10 @@ val buildNumberText =
     providers.gradleProperty("cardeck.buildNumber").orNull?.takeIf { it.isNotBlank() }
 val buildNumber = buildNumberText?.toIntOrNull()
 check(buildNumberText == null || buildNumber != null) {
-    "cardeck.buildNumber 必须是整数（收到 \"$buildNumberText\"）"
+    "cardeck.buildNumber must be an integer (got \"$buildNumberText\")"
 }
 check(buildNumber == null || buildNumber in 1..9_999) {
-    "cardeck.buildNumber 必须在 1..9999（versionCode 的低 4 位留给构建号），当前=$buildNumber"
+    "cardeck.buildNumber must be in 1..9999 (the low 4 digits of versionCode are reserved for it), got=$buildNumber"
 }
 val effectiveVersionName = if (buildNumber == null) appVersionName else "$appVersionName.$buildNumber"
 val effectiveVersionCode =
@@ -65,7 +65,7 @@ val hasReleaseKeystore = keystoreProps.getProperty("storeFile") != null
 // 预发布/CI 构建（带构建号）禁止落到 debug 签名：宁可构建失败，也不要把一个
 // 日后无法被正式包覆盖安装的「正式版」发出去。
 check(buildNumber == null || hasReleaseKeystore) {
-    "传了 -Pcardeck.buildNumber 但没有 keystore.properties —— 预发布构建禁止使用 debug 签名"
+    "-Pcardeck.buildNumber was passed but keystore.properties is missing - pre-release builds must not use debug signing"
 }
 
 android {

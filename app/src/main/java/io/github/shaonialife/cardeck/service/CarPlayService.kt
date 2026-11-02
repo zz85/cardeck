@@ -65,7 +65,7 @@ class CarPlayService : Service() {
         // 下车：车机蓝牙 ACL 断开（由 startService 投递——服务在跑时进程已是前台服务态，
         // 不受后台启动限制）。disconnect 内部会 stopService → onDestroy。
         if (intent?.action == ACTION_AUTO_STOP_SESSION) {
-            fileLog("SVC: 收到「下车自动结束」——收起会话")
+            fileLog("SVC: got \"auto-stop on exit\" - closing session")
             if (SessionController.isSessionRunning()) {
                 SessionController.disconnect(applicationContext)
             } else {
@@ -105,7 +105,7 @@ class CarPlayService : Service() {
         // WiFi 连接器、mDNS 广播器都在 ensureSessionObjects 里），再走与首页按钮相同的流程。
         // 放后台线程：冷启动时 ensure 要读偏好/绑定 UserService，别压在服务主线程上。
         if (intent?.action == ACTION_AUTO_START_SESSION) {
-            fileLog("SVC: 收到「上车自动启动」——拉起会话")
+            fileLog("SVC: got \"auto-start on entry\" - starting session")
             val app = applicationContext
             Bg.run("auto-session-start") {
                 SessionController.ensure(app)
@@ -131,7 +131,7 @@ class CarPlayService : Service() {
         val grant =
             SilentProjectionActivity.request(applicationContext)
                 ?: run {
-                    fileLog("SVC: 静默投屏令牌获取失败——本次自动连接只推视频")
+                    fileLog("SVC: failed to get silent projection token - this auto-connect is video only")
                     return false
                 }
         pendingProjectionResult = grant.resultCode to grant.data
@@ -140,9 +140,9 @@ class CarPlayService : Service() {
         val ok = mediaProjection != null
         fileLog(
             if (ok) {
-                "SVC: 静默投屏令牌已就绪（自动连接带声音）"
+                "SVC: silent projection token ready (auto-connect with audio)"
             } else {
-                "SVC: 静默投屏令牌无效（getMediaProjection 失败）"
+                "SVC: silent projection token invalid (getMediaProjection failed)"
             },
         )
         return ok
@@ -161,19 +161,19 @@ class CarPlayService : Service() {
                     override fun onStop() {
                         mediaProjection = null
                         // 关键诊断：授权丢失会导致音频/镜像不可用（此前只写 logcat，HKS 加密看不到）
-                        fileLog("SVC: MediaProjection 被系统停止（onStop）——音频/镜像需重新授权")
+                        fileLog("SVC: MediaProjection stopped by system (onStop) - audio/mirroring need re-authorization")
                     }
                 },
                 android.os.Handler(android.os.Looper.getMainLooper()),
             )
             mediaProjection = projection
             if (projection != null) {
-                fileLog("SVC: MediaProjection 就绪（投影创建成功）")
+                fileLog("SVC: MediaProjection ready (projection created)")
             } else {
-                fileLog("SVC: getMediaProjection 返回 null（授权结果已失效？）")
+                fileLog("SVC: getMediaProjection returned null (grant result expired?)")
             }
         } catch (error: Exception) {
-            fileLog("SVC: getMediaProjection 失败 - ${error.message ?: error.javaClass.simpleName}")
+            fileLog("SVC: getMediaProjection failed - ${error.message ?: error.javaClass.simpleName}")
         }
     }
 
@@ -187,7 +187,7 @@ class CarPlayService : Service() {
                     android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION,
             )
         } catch (error: Exception) {
-            fileLog("SVC: 升级 mediaProjection FGS 类型失败 - ${error.message}")
+            fileLog("SVC: failed to upgrade FGS type to mediaProjection - ${error.message}")
         }
     }
 
@@ -196,8 +196,8 @@ class CarPlayService : Service() {
         // Android 14+：MediaProjection 与前台的 mediaProjection 类型绑定——
         // 保活服务停止（如用户点「断开连接」）时系统会连带停止投影。
         fileLog(
-            "SVC: onDestroy（保活服务停止）mediaProjection=" +
-                (if (mediaProjection != null) "仍在（即将被系统回收）" else "null"),
+            "SVC: onDestroy (keep-alive service stopped) mediaProjection=" +
+                (if (mediaProjection != null) "still alive (about to be reclaimed by system)" else "null"),
         )
         super.onDestroy()
     }
@@ -242,10 +242,10 @@ class CarPlayService : Service() {
             manager.createNotificationChannel(
                 NotificationChannel(
                     CHANNEL_ID,
-                    "CarDeck 连接",
+                    "CarDeck connection",
                     NotificationManager.IMPORTANCE_LOW,
                 ).apply {
-                    description = "保持与车机的连接"
+                    description = "Keeps the connection to the head unit"
                     setShowBadge(false)
                 },
             )
@@ -263,8 +263,8 @@ class CarPlayService : Service() {
         return NotificationCompat
             .Builder(this, CHANNEL_ID)
             .setSmallIcon(android.R.drawable.stat_sys_data_bluetooth)
-            .setContentTitle("CarDeck 运行中")
-            .setContentText("正在保持与车机的连接，点开应用可查看日志")
+            .setContentTitle("CarDeck running")
+            .setContentText("Keeping the connection to the car. Open the app to view logs")
             .setContentIntent(contentIntent)
             .setAutoCancel(false)
             .setOngoing(true)

@@ -61,38 +61,38 @@ object ShizukuGate {
         when (state) {
             State.NOT_INSTALLED ->
                 ShizukuGuidance(
-                    title = "需要先安装 Shizuku",
+                    title = "Install Shizuku first",
                     message =
-                        "连接车机依赖 Shizuku 提供的 shell 权限：创建虚拟屏、注入触摸、" +
-                            "读取窗口状态都要经过它。\n\n" +
-                            "请先安装 Shizuku App 并按官方说明启动服务（无线调试激活，免 root），" +
-                            "完成后回到这里点「重试检查」。",
+                        "Connecting to the car relies on Shizuku's shell permission: creating virtual displays, " +
+                            "injecting touch and reading window state all go through it.\n\n" +
+                            "Install the Shizuku app and start its service per the official guide (via wireless debugging, no root), " +
+                            "then come back and tap \"Check again\".",
                     primaryLabel = null,
                 )
 
             State.NOT_RUNNING ->
                 ShizukuGuidance(
-                    title = "Shizuku 服务未运行",
+                    title = "Shizuku service not running",
                     message =
-                        "Shizuku 已安装，但服务当前没有运行，此时连接会失败" +
-                            "（车机没有画面、触摸也不可用）。\n\n" +
-                            "请打开 Shizuku App 点「启动」启动服务（手机重启后需要重新启动一次），" +
-                            "然后回来点「重试检查」。",
-                    primaryLabel = "打开 Shizuku",
+                        "Shizuku is installed but its service isn't running, so connecting will fail" +
+                            " (no picture on the car, touch unavailable).\n\n" +
+                            "Open the Shizuku app and tap \"Start\" to start the service (needed again after each phone reboot), " +
+                            "then come back and tap \"Check again\".",
+                    primaryLabel = "Open Shizuku",
                 )
 
             State.UNAUTHORIZED ->
                 ShizukuGuidance(
-                    title = "未授权本应用使用 Shizuku",
+                    title = "Shizuku not authorized for this app",
                     message =
-                        "Shizuku 服务已在运行，但本应用还没有获得授权，此时连接会失败" +
-                            "（车机没有画面、触摸也不可用）。\n\n" +
-                            "点「请求授权」并在弹出的窗口中点「允许」；若之前拒绝过，" +
-                            "请到 Shizuku App →「授权应用」里手动允许本应用。",
-                    primaryLabel = "请求授权",
+                        "The Shizuku service is running, but this app isn't authorized yet, so connecting will fail" +
+                            " (no picture on the car, touch unavailable).\n\n" +
+                            "Tap \"Request access\" and choose \"Allow\" in the popup; if you denied it before, " +
+                            "allow this app manually in the Shizuku app → \"Authorized applications\".",
+                    primaryLabel = "Request access",
                 )
 
-            State.READY -> ShizukuGuidance("Shizuku 就绪", "", null)
+            State.READY -> ShizukuGuidance("Shizuku ready", "", null)
         }
 }
 
@@ -136,13 +136,13 @@ object Shell {
         if (android.os.Looper.myLooper() == android.os.Looper.getMainLooper()) {
             mainThreadViolations++
             violationSink?.invoke(
-                "SHELL: ⚠ 主线程调用 shell（第 $mainThreadViolations 次）cmd=${cmd.take(60)}" +
-                    "（$timeoutMs ms 上限）——应改用 Bg.run / 后台线程",
+                "SHELL: ⚠ shell called on main thread (#$mainThreadViolations) cmd=${cmd.take(60)}" +
+                    " ($timeoutMs ms limit) - use Bg.run / a background thread",
             )
         }
         val binder =
             rikka.shizuku.Shizuku.getBinder()
-                ?: return Result(-1, "Shizuku 未连接")
+                ?: return Result(-1, "Shizuku not connected")
         return try {
             val service = IShizukuService.Stub.asInterface(binder)
             val process = service.newProcess(arrayOf("sh", "-c", cmd), null, null)
@@ -176,7 +176,7 @@ object Shell {
                 }
             Result(exit, output)
         } catch (e: Exception) {
-            Result(-1, "命令执行失败：${e.message ?: e.javaClass.simpleName}")
+            Result(-1, "Command failed: ${e.message ?: e.javaClass.simpleName}")
         }
     }
 }
@@ -263,13 +263,13 @@ object CarInputClient {
                 bound.pid()
             } catch (t: Throwable) {
                 // 旧 dex 无 pid() 事务（正常不会发生：Shizuku 按版本复用，绑定的必是当前版本）
-                diag("reap 跳过：pid() 不可用（${t.javaClass.simpleName}）")
+                diag("reap skipped: pid() unavailable (${t.javaClass.simpleName})")
                 return 0
             }
         val procName = (appContext?.packageName ?: return 0) + ":car_input"
         val ps = Shell.exec("ps -A -o PID,ARGS", 5_000L)
         if (!ps.ok) {
-            diag("reap 跳过：ps 失败（${ps.output.take(40)}）")
+            diag("reap skipped: ps failed (${ps.output.take(40)})")
             return 0
         }
         val stale =
@@ -283,7 +283,7 @@ object CarInputClient {
         if (stale.isEmpty()) return 0
         val killed = stale.count { pid -> Shell.exec("kill -9 $pid", 3_000L).ok }
         // force：紧随 bind 的 1s 节流窗口会吞掉这条关键结果（排查时必查）
-        diag("已回收 $killed/${stale.size} 个旧版本 UserService 进程（其残留虚拟屏随之释放）", force = true)
+        diag("Reaped $killed/${stale.size} stale UserService processes (their leftover virtual displays are released)", force = true)
         return killed
     }
 
@@ -295,7 +295,7 @@ object CarInputClient {
         try {
             service?.setPhysicalScreenPower(on) ?: false
         } catch (t: Throwable) {
-            diag("setPhysicalScreenPower($on) 失败：${t.javaClass.simpleName} ${t.message}")
+            diag("setPhysicalScreenPower($on) failed: ${t.javaClass.simpleName} ${t.message}")
             false
         }
 
@@ -310,7 +310,7 @@ object CarInputClient {
         try {
             service?.keyEvent(displayId, keyCode) ?: false
         } catch (t: Throwable) {
-            diag("keyEvent($displayId,$keyCode) 失败：${t.javaClass.simpleName} ${t.message}")
+            diag("keyEvent($displayId,$keyCode) failed: ${t.javaClass.simpleName} ${t.message}")
             false
         }
 
@@ -392,14 +392,14 @@ object CarInputClient {
         try {
             rikka.shizuku.Shizuku.addBinderReceivedListener {
                 // Shizuku 服务端（重新）起来了：旧连接必然失效，允许重新绑定一次
-                diag("Shizuku binder 已就绪——重新绑定 UserService", force = true)
+                diag("Shizuku binder ready - rebinding UserService", force = true)
                 binding = false
                 bindingSince = 0L
                 lastBindAttemptAt = 0L
                 appContext?.let { Bg.run("shizuku-bind") { ensureInternal(it) } }
             }
             rikka.shizuku.Shizuku.addBinderDeadListener {
-                diag("Shizuku binder 断开（服务端退出/重启）——触摸注入暂不可用", force = true)
+                diag("Shizuku binder died (server exited/restarted) - touch injection unavailable for now", force = true)
                 service = null
                 binding = false
                 bindingSince = 0L
@@ -429,14 +429,14 @@ object CarInputClient {
             }
             binding = false
             diag(
-                "绑定等待 ${waited}ms 仍未回调——重新发起（不杀服务进程）",
+                "Bind waited ${waited}ms with no callback - retrying (service process not killed)",
                 force = true,
             )
         }
         lastBindAttemptAt = now
         val gate = ShizukuGate.state(app)
         if (gate != ShizukuGate.State.READY) {
-            diag("绑定暂停：state=$gate")
+            diag("Bind paused: state=$gate")
             return
         }
         binding = true
@@ -458,7 +458,7 @@ object CarInputClient {
             // bindUserService 本身幂等：服务已在运行时 Shizuku 会把现有 binder 再次
             // 回调到同一个 ServiceConnection（Set 去重），无需先解绑。
             rikka.shizuku.Shizuku.bindUserService(args, conn)
-            diag("bindUserService requested（等待回调，超时 ${BIND_STUCK_TIMEOUT_MS}ms）")
+            diag("bindUserService requested (awaiting callback, timeout ${BIND_STUCK_TIMEOUT_MS}ms)")
         } catch (e: Throwable) {
             binding = false
             bindingSince = 0L

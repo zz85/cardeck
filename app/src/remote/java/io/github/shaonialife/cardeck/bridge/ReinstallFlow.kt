@@ -55,7 +55,7 @@ object ReinstallFlow {
             val installer = context.packageManager.packageInstaller
             installer.mySessions.forEach { info ->
                 runCatching { installer.abandonSession(info.sessionId) }
-                DebugFileLog.append(context, "BRIDGE: 清理遗留安装会话 ${info.sessionId}")
+                DebugFileLog.append(context, "BRIDGE: abandoned stale install session ${info.sessionId}")
             }
         }
     }
@@ -74,12 +74,12 @@ object ReinstallFlow {
         if (url.isBlank()) return
         DebugFileLog.append(
             ctx,
-            "BRIDGE: 收到新版本推送 v$version（" +
+            "BRIDGE: received new version push v$version (" +
                 if (deltaUrl.isNullOrBlank()) {
-                    "全量"
+                    "full"
                 } else {
-                    "差分包 ${deltaSizeKB ?: "?"}KB" +
-                        "）"
+                    "delta ${deltaSizeKB ?: "?"}KB" +
+                        ")"
                 },
         )
         Bg.run("bridge-apk-download") {
@@ -90,30 +90,30 @@ object ReinstallFlow {
             if (!deltaUrl.isNullOrBlank() && !deltaSha256.isNullOrBlank()) {
                 file = tryDelta(ctx, deltaUrl, deltaSha256, baseSha256, version)
                 if (file == null) {
-                    DebugFileLog.append(ctx, "BRIDGE: 差分更新未成——回退全量下载")
+                    DebugFileLog.append(ctx, "BRIDGE: delta update failed - falling back to full download")
                 } else if (deltaSizeKB != null) {
-                    deltaNote = "差分包 ${deltaSizeKB}KB · 完整包 ${file.length() / 1024 / 1024}MB"
+                    deltaNote = "Delta ${deltaSizeKB}KB · full ${file.length() / 1024 / 1024}MB"
                 }
             }
             if (file == null) {
-                DebugFileLog.append(ctx, "BRIDGE: 开始下载 $url")
+                DebugFileLog.append(ctx, "BRIDGE: downloading $url")
                 // 大包跨公网传输可能中途断流（蜂窝弱信号实测），重试一次
                 file = download(ctx, url) ?: download(ctx, url)
                 if (file == null) {
-                    DebugFileLog.append(ctx, "BRIDGE: APK 下载失败：$url")
+                    DebugFileLog.append(ctx, "BRIDGE: APK download failed: $url")
                     return@run
                 }
                 val digest = sha256Of(file)
                 if (sha256.isNotBlank() && !digest.equals(sha256, ignoreCase = true)) {
-                    DebugFileLog.append(ctx, "BRIDGE: APK 校验失败（本地=$digest 期望=$sha256）——拒绝安装")
+                    DebugFileLog.append(ctx, "BRIDGE: APK checksum mismatch (local=$digest expected=$sha256) - install refused")
                     file.delete()
                     return@run
                 }
             }
             DebugFileLog.append(
                 ctx,
-                "BRIDGE: 新版本 v$version 就绪（${file.length() / 1024 / 1024}MB，sha256 ✓" +
-                    (deltaNote?.let { "，$it" } ?: "") + "）",
+                "BRIDGE: new version v$version ready (${file.length() / 1024 / 1024}MB, sha256 ✓" +
+                    (deltaNote?.let { ", $it" } ?: "") + ")",
             )
             promptInstallReady(ctx, file, version, deltaNote)
         }
@@ -133,12 +133,12 @@ object ReinstallFlow {
         if (baseSha256.isNullOrBlank()) return null
         val patch =
             download(ctx, deltaUrl) ?: run {
-                DebugFileLog.append(ctx, "BRIDGE: 差分包下载失败")
+                DebugFileLog.append(ctx, "BRIDGE: delta download failed")
                 return null
             }
         val patchDigest = sha256Of(patch)
         if (!patchDigest.equals(deltaSha256, ignoreCase = true)) {
-            DebugFileLog.append(ctx, "BRIDGE: 差分包校验失败（本地=$patchDigest 期望=$deltaSha256）")
+            DebugFileLog.append(ctx, "BRIDGE: delta checksum mismatch (local=$patchDigest expected=$deltaSha256)")
             patch.delete()
             return null
         }
@@ -146,14 +146,14 @@ object ReinstallFlow {
         val out = File(ctx.cacheDir, "bridge-update-delta.apk")
         val error = DeltaPatch.apply(patch, base, out)
         if (error != null) {
-            DebugFileLog.append(ctx, "BRIDGE: 差分应用失败（$error）——v$version")
+            DebugFileLog.append(ctx, "BRIDGE: delta apply failed ($error) - v$version")
             out.delete()
             patch.delete()
             return null
         }
         val patchKB = patch.length() / 1024
         patch.delete()
-        DebugFileLog.append(ctx, "BRIDGE: 差分应用成功（补丁 ${patchKB}KB + 基线 → ${out.length() / 1024 / 1024}MB）——v$version")
+        DebugFileLog.append(ctx, "BRIDGE: delta applied (patch ${patchKB}KB + base → ${out.length() / 1024 / 1024}MB) - v$version")
         return out
     }
 
@@ -225,9 +225,9 @@ object ReinstallFlow {
                     )
                 session.commit(sender.intentSender)
                 session.close()
-                DebugFileLog.append(ctx, "BRIDGE: 已发起安装（等待系统确认）")
+                DebugFileLog.append(ctx, "BRIDGE: install started (awaiting system confirmation)")
             } catch (error: Exception) {
-                DebugFileLog.append(ctx, "BRIDGE: 安装发起失败 - ${error.message}")
+                DebugFileLog.append(ctx, "BRIDGE: install start failed - ${error.message}")
             }
         }
     }
@@ -257,7 +257,7 @@ object ReinstallFlow {
             }
             file
         } catch (error: Exception) {
-            DebugFileLog.append(ctx, "BRIDGE: 下载异常 - ${error.message}")
+            DebugFileLog.append(ctx, "BRIDGE: download error - ${error.message}")
             null
         }
     }

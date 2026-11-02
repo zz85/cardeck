@@ -70,12 +70,12 @@ class CarInputServiceImpl(
                     // 物理屏若被我们置为 OFF，自尽前必须恢复：否则新版本进程还没起来，
                     // 手机就停在一块「逻辑醒着、物理黑着」的屏上（按电源键两次才恢复）。
                     if (physicalScreenOff) {
-                        fileLog("stale self-reap: 恢复物理屏点亮（避免升级后停在黑屏）")
+                        fileLog("stale self-reap: turning physical screen back on (avoid black screen after upgrade)")
                         runCatching { setPhysicalScreenPower(true) }
                     }
                     fileLog(
-                        "stale self-reap: lastUpdateTime $startupLastUpdateTime -> $now，" +
-                            "exiting pid=${android.os.Process.myPid()}（其持有的虚拟屏随进程回收）",
+                        "stale self-reap: lastUpdateTime $startupLastUpdateTime -> $now, " +
+                            "exiting pid=${android.os.Process.myPid()} (its virtual displays are released with the process)",
                     )
                     android.os.Process.killProcess(android.os.Process.myPid())
                     return@Thread
@@ -97,7 +97,7 @@ class CarInputServiceImpl(
             try {
                 context.getSystemService(Context.INPUT_SERVICE) as? InputManager
             } catch (t: Throwable) {
-                Log.d(TAG, "probe getSystemService(INPUT_SERVICE) 异常", t)
+                Log.d(TAG, "probe getSystemService(INPUT_SERVICE) error", t)
                 null
             }
         if (im != null) {
@@ -110,7 +110,7 @@ class CarInputServiceImpl(
             val m = findInjectMethod(cls.methods)
             if (m != null) return@lazy Injector(global, m)
         } catch (t: Throwable) {
-            Log.d(TAG, "probe InputManagerGlobal 异常", t)
+            Log.d(TAG, "probe InputManagerGlobal error", t)
         }
         null
     }
@@ -150,13 +150,13 @@ class CarInputServiceImpl(
                 }
             if (!result && !injectFailLogged) {
                 injectFailLogged = true
-                Log.d(TAG, "injectInputEvent 返回 false method=$m")
+                Log.d(TAG, "injectInputEvent returned false method=$m")
             }
             result
         } catch (t: Throwable) {
             if (!injectFailLogged) {
                 injectFailLogged = true
-                Log.d(TAG, "inject 异常 method=${inj.method}", t)
+                Log.d(TAG, "inject error method=${inj.method}", t)
             }
             false
         } finally {
@@ -211,7 +211,7 @@ class CarInputServiceImpl(
             e.setSource(InputDevice.SOURCE_TOUCHSCREEN)
             e
         } catch (t: Throwable) {
-            Log.d(TAG, "build MotionEvent 异常", t)
+            Log.d(TAG, "build MotionEvent error", t)
             null
         }
 
@@ -312,7 +312,7 @@ class CarInputServiceImpl(
                     .getField("DISPLAY_IME_POLICY_LOCAL")
                     .getInt(null)
             } catch (t: Throwable) {
-                fileLog("DISPLAY_IME_POLICY_LOCAL 反射失败，回退 AOSP 值 0：$t")
+                fileLog("DISPLAY_IME_POLICY_LOCAL reflection failed, falling back to AOSP value 0: $t")
                 0
             }
         fileLog("DISPLAY_IME_POLICY_LOCAL=$value")
@@ -336,7 +336,7 @@ class CarInputServiceImpl(
                 .getMethod("asInterface", IBinder::class.java)
                 .invoke(null, binder)
         } catch (t: Throwable) {
-            fileLog("IWindowManager 反射失败（IME 策略将不生效）：$t")
+            fileLog("IWindowManager reflection failed (IME policy won't apply): $t")
             null
         }
     }
@@ -357,9 +357,9 @@ class CarInputServiceImpl(
                         .getMethod("getDisplayImePolicy", Integer.TYPE)
                         .invoke(proxy, displayId)
                 }.getOrNull()
-            fileLog("setDisplayImePolicy($displayId, LOCAL=$imePolicyLocal) ok, 读回=$readBack")
+            fileLog("setDisplayImePolicy($displayId, LOCAL=$imePolicyLocal) ok, readback=$readBack")
         } catch (t: Throwable) {
-            fileLog("setDisplayImePolicy($displayId, LOCAL=$imePolicyLocal) 失败：$t")
+            fileLog("setDisplayImePolicy($displayId, LOCAL=$imePolicyLocal) failed: $t")
         }
     }
 
@@ -399,7 +399,7 @@ class CarInputServiceImpl(
                 try {
                     context.createPackageContext("com.android.shell", 0)
                 } catch (t: Throwable) {
-                    fileLog("createPackageContext(com.android.shell) 失败：$t，回退本 app context")
+                    fileLog("createPackageContext(com.android.shell) failed: $t, falling back to own app context")
                     context
                 }
             fileLog("ctx package=${shellContext.packageName}")
@@ -438,10 +438,10 @@ class CarInputServiceImpl(
                         dpi,
                         surface,
                         baseFlags or FLAG_OWN_DISPLAY_GROUP or FLAG_ALWAYS_UNLOCKED,
-                        "受信+独立组+ALWAYS_UNLOCKED",
+                        "trusted+own group+ALWAYS_UNLOCKED",
                     )
                 if (vd == null) {
-                    fileLog("$name 带 ALWAYS_UNLOCKED 失败——降级为独立组（ROM 可能未给 shell 该权限）")
+                    fileLog("$name with ALWAYS_UNLOCKED failed - downgrading to own group (ROM may deny shell this permission)")
                     vd =
                         createVirtualDisplayAttempt(
                             dm,
@@ -451,12 +451,12 @@ class CarInputServiceImpl(
                             dpi,
                             surface,
                             baseFlags or FLAG_OWN_DISPLAY_GROUP,
-                            "受信+独立组",
+                            "trusted+own group",
                         )
                 }
                 if (vd == null) {
-                    fileLog("$name 带 OWN_DISPLAY_GROUP 失败——回退基础 flags")
-                    vd = createVirtualDisplayAttempt(dm, name, width, height, dpi, surface, baseFlags, "受信基础")
+                    fileLog("$name with OWN_DISPLAY_GROUP failed - falling back to base flags")
+                    vd = createVirtualDisplayAttempt(dm, name, width, height, dpi, surface, baseFlags, "trusted base")
                 }
             } else {
                 // dock 屏（不受信）默认落在**默认显示组**：物理主屏断电/锁屏时整组跟着灭，
@@ -475,10 +475,10 @@ class CarInputServiceImpl(
                         dpi,
                         surface,
                         baseFlags or FLAG_OWN_DISPLAY_GROUP or FLAG_ALWAYS_UNLOCKED,
-                        "非受信+独立组+ALWAYS_UNLOCKED",
+                        "untrusted+own group+ALWAYS_UNLOCKED",
                     )
                 if (vd == null) {
-                    fileLog("$name 带 ALWAYS_UNLOCKED 失败——降级为独立组（ROM 可能未给 shell 该权限）")
+                    fileLog("$name with ALWAYS_UNLOCKED failed - downgrading to own group (ROM may deny shell this permission)")
                     vd =
                         createVirtualDisplayAttempt(
                             dm,
@@ -488,12 +488,12 @@ class CarInputServiceImpl(
                             dpi,
                             surface,
                             baseFlags or FLAG_OWN_DISPLAY_GROUP,
-                            "非受信+独立组",
+                            "untrusted+own group",
                         )
                 }
                 if (vd == null) {
-                    fileLog("$name 带 OWN_DISPLAY_GROUP 失败——回退基础 flags（主屏断电时该屏会跟着休眠）")
-                    vd = createVirtualDisplayAttempt(dm, name, width, height, dpi, surface, baseFlags, "非受信")
+                    fileLog("$name with OWN_DISPLAY_GROUP failed - falling back to base flags (display sleeps when main panel powers off)")
+                    vd = createVirtualDisplayAttempt(dm, name, width, height, dpi, surface, baseFlags, "untrusted")
                 }
             }
             val created = vd
@@ -511,8 +511,8 @@ class CarInputServiceImpl(
                     }
                 val effective = (realFlags and 0x200) != 0
                 fileLog(
-                    "ALWAYS_UNLOCKED 读回 display.flags=0x${realFlags.toString(16)} -> " +
-                        if (effective) "生效" else "未生效（锁屏仍会影响该屏）",
+                    "ALWAYS_UNLOCKED readback display.flags=0x${realFlags.toString(16)} -> " +
+                        if (effective) "effective" else "not effective (lock screen still affects this display)",
                 )
             }
             if (created == null || id < 0) {
@@ -554,7 +554,7 @@ class CarInputServiceImpl(
         if (vd == null) {
             // 不在本进程 map：该屏由其它（旧版本）UserService 进程创建，只有创建者能释放。
             // 应用侧兜底见 CarInputClient.reapStaleUserServices（杀持有进程）。
-            fileLog("releaseDisplay id=$displayId -> 非本进程持有（跨进程无法释放）")
+            fileLog("releaseDisplay id=$displayId -> not owned by this process (can't release cross-process)")
             return false
         }
         return try {
@@ -582,7 +582,7 @@ class CarInputServiceImpl(
             fileLog("createDisplay($name) $label flags=0x${flags.toString(16)}")
             dm.createVirtualDisplay(name, width, height, dpi, surface, flags, null, null)
         } catch (t: Throwable) {
-            fileLog("createDisplay($name) $label 异常：$t")
+            fileLog("createDisplay($name) $label error: $t")
             null
         }
 
@@ -608,7 +608,7 @@ class CarInputServiceImpl(
     private fun setPanelPower(on: Boolean): Boolean {
         val token =
             physicalDisplayToken() ?: run {
-                fileLog("setPanelPower($on) 失败：各入口都拿不到内置屏 token")
+                fileLog("setPanelPower($on) failed: no entry point yielded the built-in display token")
                 return false
             }
         val mode = if (on) POWER_MODE_NORMAL else POWER_MODE_OFF
@@ -619,7 +619,7 @@ class CarInputServiceImpl(
                 .invoke(null, token, mode)
             true
         } catch (t: Throwable) {
-            fileLog("setPanelPower($on) 失败：$t")
+            fileLog("setPanelPower($on) failed: $t")
             false
         }
     }
@@ -645,7 +645,7 @@ class CarInputServiceImpl(
                 fileLog("token via getInternalDisplayToken")
                 return it
             }
-        }.onFailure { fileLog("getInternalDisplayToken 入口失败：${it.message}") }
+        }.onFailure { fileLog("getInternalDisplayToken entry failed: ${it.message}") }
         // ② DisplayControl（新系统：方法已从 SurfaceControl 迁出）
         displayControlClass?.let { cls ->
             runCatching {
@@ -655,7 +655,7 @@ class CarInputServiceImpl(
                     fileLog("token via DisplayControl id=$id")
                     return it
                 }
-            }.onFailure { fileLog("DisplayControl token 入口失败：${it.message}") }
+            }.onFailure { fileLog("DisplayControl token entry failed: ${it.message}") }
         }
         // ③ getPhysicalDisplayIds/getPhysicalDisplayToken（Android 11~14）
         runCatching {
@@ -666,7 +666,7 @@ class CarInputServiceImpl(
                 fileLog("token via SurfaceControl.getPhysicalDisplayToken id=$id")
                 return it
             }
-        }.onFailure { fileLog("getPhysicalDisplayToken 入口失败：${it.message}") }
+        }.onFailure { fileLog("getPhysicalDisplayToken entry failed: ${it.message}") }
         return null
     }
 
@@ -687,7 +687,7 @@ class CarInputServiceImpl(
                 )
             val classpath = System.getenv("SYSTEMSERVERCLASSPATH")
             if (classpath.isNullOrEmpty()) {
-                fileLog("SYSTEMSERVERCLASSPATH 为空——无法加载 DisplayControl")
+                fileLog("SYSTEMSERVERCLASSPATH empty - can't load DisplayControl")
                 return@lazy null
             }
             val loader =
@@ -704,10 +704,10 @@ class CarInputServiceImpl(
             val cls = loader.loadClass("com.android.server.display.DisplayControl")
             // 静态 JNI 方法在 libandroid_servers.so 里注册；必须加载进这个 ClassLoader
             registerAndroidServersLibrary(cls)
-            fileLog("DisplayControl 已就绪")
+            fileLog("DisplayControl ready")
             cls
         } catch (t: Throwable) {
-            fileLog("DisplayControl 加载失败（SDK ${Build.VERSION.SDK_INT}）：$t")
+            fileLog("DisplayControl load failed (SDK ${Build.VERSION.SDK_INT}): $t")
             null
         }
     }

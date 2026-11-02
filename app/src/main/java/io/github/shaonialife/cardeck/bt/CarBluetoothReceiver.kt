@@ -50,12 +50,12 @@ class CarBluetoothReceiver : BroadcastReceiver() {
         val name = runCatching { device.name }.getOrNull()
 
         if (!isCarDevice(app, address, name)) {
-            DebugFileLog.append(app, "AUTO: 忽略非车机蓝牙 ${name ?: "?"}（$address）")
+            DebugFileLog.append(app, "AUTO: ignoring non-car Bluetooth ${name ?: "?"} ($address)")
             return
         }
 
         if (action == BluetoothDevice.ACTION_ACL_CONNECTED) {
-            DebugFileLog.append(app, "AUTO: 车机蓝牙已连上 ${name ?: "?"}（$address）——自动拉起会话")
+            DebugFileLog.append(app, "AUTO: car Bluetooth connected ${name ?: "?"} ($address) - auto-starting session")
             runCatching {
                 context.startForegroundService(
                     Intent(context, CarPlayService::class.java)
@@ -64,12 +64,12 @@ class CarBluetoothReceiver : BroadcastReceiver() {
             }.onFailure { error ->
                 DebugFileLog.append(
                     app,
-                    "AUTO: 自动启动被系统拦截（${error.javaClass.simpleName}: ${error.message}）" +
-                        "——请授予「显示在其他应用上层」后重试，或手动打开 App 连接一次",
+                    "AUTO: auto-start blocked by system (${error.javaClass.simpleName}: ${error.message})" +
+                        " - grant \"Display over other apps\" and retry, or open the app and connect manually once",
                 )
             }
         } else {
-            DebugFileLog.append(app, "AUTO: 车机蓝牙已断开 ${name ?: "?"}（$address）——结束会话")
+            DebugFileLog.append(app, "AUTO: car Bluetooth disconnected ${name ?: "?"} ($address) - ending session")
             // 会话在跑时服务就是前台进程，startService 允许；不在跑说明本来就没有会话
             runCatching {
                 context.startService(

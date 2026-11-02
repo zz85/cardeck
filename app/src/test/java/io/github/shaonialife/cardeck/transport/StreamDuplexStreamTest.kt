@@ -45,7 +45,7 @@ class StreamDuplexStreamTest {
             start()
         }
 
-        assertTrue("write 在读线程阻塞期间发生了死锁", written.await(2, TimeUnit.SECONDS))
+        assertTrue("write deadlocked while the reader thread was blocked", written.await(2, TimeUnit.SECONDS))
 
         stream.close()
         reader.join(1_000)

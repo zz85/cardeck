@@ -99,12 +99,12 @@ class VideoSender(
             client.tcpNoDelay = true
             // 推流是长连接：车机熄火/走出热点时链路常不发 RST，写入会阻塞在满窗口上，
             // 编码器线程随之卡死（表现为「画面停在最后一帧」）。
-            TcpLiveness.configure(client, "视频数据口", log)
+            TcpLiveness.configure(client, "video data port", log)
             socket = client
-            log("VIDEO: 数据端口已连通 $host:$dataPort（等 RECORD 后启动编码器）")
+            log("VIDEO: data port connected $host:$dataPort (encoder starts after RECORD)")
             true
         } catch (error: Exception) {
-            log("VIDEO: 数据端口连接失败 - ${error.message}")
+            log("VIDEO: data port connect failed - ${error.message}")
             false
         }
     }
@@ -125,7 +125,7 @@ class VideoSender(
                     ((width * height * 6L).toInt()).coerceIn(2_000_000, 10_000_000) *
                         if (targetFps >= 60) 1.5f else 1f
                 ).toInt().coerceAtMost(15_000_000)
-            log("VIDEO: 启动编码器 ${width}x$height@$targetFps ${bitrate / 1_000_000}Mbps（端口已连通）")
+            log("VIDEO: starting encoder ${width}x$height@$targetFps ${bitrate / 1_000_000}Mbps (port connected)")
 
             val format =
                 MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, width, height).apply {
@@ -151,7 +151,7 @@ class VideoSender(
             try {
                 codec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
             } catch (levelRejected: Exception) {
-                log("VIDEO: 指定 level 4.0 被编码器拒绝（${levelRejected.message}）——回退自动选择（部分车机可能黑屏）")
+                log("VIDEO: encoder rejected level 4.0 (${levelRejected.message}) - falling back to auto (some head units may go black)")
                 val fallback =
                     MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, width, height).apply {
                         setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
@@ -176,7 +176,7 @@ class VideoSender(
             }
             true
         } catch (error: Exception) {
-            log("VIDEO: 启动失败 - ${error.message}")
+            log("VIDEO: start failed - ${error.message}")
             stop()
             false
         }
@@ -208,7 +208,7 @@ class VideoSender(
             codec.setParameters(params)
             true
         } catch (error: Exception) {
-            log("VIDEO: 请求关键帧失败 - ${error.message}")
+            log("VIDEO: keyframe request failed - ${error.message}")
             false
         }
     }
@@ -227,7 +227,7 @@ class VideoSender(
                     } catch (error: Exception) {
                         // 编码器进错误态（如非法尺寸首帧）：必须留痕——静默 break 曾让
                         // 「零帧推流 4 秒后断开」无从排查（接收端只见 peer EOF）
-                        log("VIDEO: 编码器取帧异常，停止推流 - ${error.message}")
+                        log("VIDEO: encoder dequeue error, stopping stream - ${error.message}")
                         break
                     }
                 when {
@@ -252,7 +252,7 @@ class VideoSender(
         } catch (error: Exception) {
             // 视频数据口断开（如接收端屏幕关闭收摊会话）：只终止推流，绝不冒泡——
             // 后台线程未捕获异常会杀死整个进程（曾导致锁屏后 app 消失）
-            log("VIDEO: 推流中止 - ${error.message}（等待接收端恢复后重连）")
+            log("VIDEO: stream aborted - ${error.message} (will reconnect when receiver recovers)")
         } finally {
             stop()
             // 会话真实结束信号（静默降噪解除 / 状态收尾）
@@ -305,7 +305,7 @@ class VideoSender(
         val rawSps = nalUnits.firstOrNull { it.isNotEmpty() && (it[0].toInt() and 0x1F) == 7 }
         val pps = nalUnits.firstOrNull { it.isNotEmpty() && (it[0].toInt() and 0x1F) == 8 }
         if (rawSps == null || pps == null) {
-            log("VIDEO: csd 缺少 SPS/PPS（${nalUnits.size} 个 NAL），跳过 config")
+            log("VIDEO: csd missing SPS/PPS (${nalUnits.size} NALs), skipping config")
             return
         }
         // level_idc 补丁到 4.0（关键帧内嵌 SPS 同样会打补丁，见 sendVideoFrame）
@@ -338,10 +338,10 @@ class VideoSender(
         output.flush()
         configSent = true
         log(
-            "VIDEO: ✓ VideoConfig 已发送 avcC=${body.size}B（SPS ${sps.size}B/PPS ${pps.size}B，" +
+            "VIDEO: ✓ VideoConfig sent avcC=${body.size}B (SPS ${sps.size}B/PPS ${pps.size}B, " +
                 "profile=${sps[1].toInt() and 0xFF} level=${sps[3].toInt() and 0xFF} " +
-                "flags=0x%02x ${width}x$height）".format(header[6].toInt() and 0xFF) +
-                "\n  ↳ 头部前 24 字节=" + header.take(24).joinToString(" ") { "%02x".format(it) },
+                "flags=0x%02x ${width}x$height)".format(header[6].toInt() and 0xFF) +
+                "\n  ↳ header first 24 bytes=" + header.take(24).joinToString(" ") { "%02x".format(it) },
         )
     }
 
@@ -352,7 +352,7 @@ class VideoSender(
         output: java.io.OutputStream,
     ) {
         if (!configSent) {
-            log("VIDEO: 丢弃一帧（config 尚未发送）")
+            log("VIDEO: dropped a frame (config not sent yet)")
             return
         }
         val annexB = ByteArray(size)
@@ -402,7 +402,7 @@ class VideoSender(
         framesSinceKeepAlive++
         bytesSinceKeepAlive += plain.size.toLong()
         if (keyFrame || framesSent <= 3 || framesSent % 150 == 0L) {
-            log("VIDEO: 帧 #$framesSent ${plain.size}B${if (keyFrame) " (key)" else ""} 已发送")
+            log("VIDEO: frame #$framesSent ${plain.size}B${if (keyFrame) " (key)" else ""} sent")
         }
     }
 

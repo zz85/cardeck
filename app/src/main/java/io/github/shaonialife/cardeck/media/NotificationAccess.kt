@@ -89,10 +89,10 @@ object NotificationAccess {
             granted = ok
             log(
                 if (ok) {
-                    "MEDIA: 通知使用权已授予（音乐卡可显示歌名/播放状态）"
+                    "MEDIA: notification access granted (music card can show title/playback state)"
                 } else {
-                    "MEDIA: 通知使用权未授予（cmd 结果=${result.exitCode}）——" +
-                        "音乐卡只显示播放状态、无歌名；可在系统设置「通知使用权」手动开启"
+                    "MEDIA: notification access not granted (cmd result=${result.exitCode}) - " +
+                        "music card shows playback state only, no title; enable \"Notification access\" manually in system settings"
                 },
             )
             return ok
@@ -122,7 +122,7 @@ object NotificationAccess {
                 serviceConnected = true
                 return
             }
-            log("MEDIA: 通知使用权在列表里但监听器未绑定——触发一次重绑")
+            log("MEDIA: notification access is listed but the listener is not bound - triggering a rebind")
             Shell.exec("cmd notification disallow_listener $spec", timeoutMs = 4_000)
             Thread.sleep(300)
             Shell.exec("cmd notification allow_listener $spec", timeoutMs = 4_000)
@@ -132,11 +132,11 @@ object NotificationAccess {
                 val after = Shell.exec("dumpsys notification --noredact", timeoutMs = 6_000).output
                 if (isLiveIn(after, spec)) {
                     serviceConnected = true
-                    log("MEDIA: 监听器已重新绑定（音乐卡元数据恢复）")
+                    log("MEDIA: listener rebound (music card metadata restored)")
                     return
                 }
             }
-            log("MEDIA: ⚠ 重绑后监听器仍未连上——音乐卡可能只显示播放状态")
+            log("MEDIA: ⚠ listener still not connected after rebind - music card may only show playback state")
         } catch (_: Exception) {
             // shell 受限/超时：不影响主流程，下次会话再试
         } finally {

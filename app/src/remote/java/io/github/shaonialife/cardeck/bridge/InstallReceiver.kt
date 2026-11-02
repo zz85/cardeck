@@ -20,15 +20,18 @@ class InstallReceiver : BroadcastReceiver() {
         val sessionId = intent.getIntExtra(PackageInstaller.EXTRA_SESSION_ID, -1)
         // 只认本次提交的会话：遗留会话的迟到广播会把确认 Intent 串成旧包
         if (ReinstallFlow.currentInstallSessionId != -1 && sessionId != ReinstallFlow.currentInstallSessionId) {
-            DebugFileLog.append(context, "BRIDGE: 忽略异会话广播（session=$sessionId 当前=${ReinstallFlow.currentInstallSessionId}）")
+            DebugFileLog.append(
+                context,
+                "BRIDGE: ignoring broadcast for other session (session=$sessionId current=${ReinstallFlow.currentInstallSessionId})",
+            )
             return
         }
-        DebugFileLog.append(context, "BRIDGE: 安装状态 status=$status msg=$message")
+        DebugFileLog.append(context, "BRIDGE: install status status=$status msg=$message")
         when (status) {
             PackageInstaller.STATUS_PENDING_USER_ACTION -> {
                 val confirm =
                     intent.getParcelableExtra<Intent>(Intent.EXTRA_INTENT) ?: return
-                DebugFileLog.append(context, "BRIDGE: 需用户确认 → ${confirm.component}")
+                DebugFileLog.append(context, "BRIDGE: user confirmation required → ${confirm.component}")
                 confirm.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 ReinstallFlow.pendingConfirmIntent = confirm
                 // 只走前台转发单一路径：Receiver 直启 + 前台转发会双启动同一确认
@@ -38,7 +41,7 @@ class InstallReceiver : BroadcastReceiver() {
             }
 
             PackageInstaller.STATUS_SUCCESS -> {
-                DebugFileLog.append(context, "BRIDGE: 安装成功")
+                DebugFileLog.append(context, "BRIDGE: install succeeded")
                 // 安装完成后拉起设置页弹「继续调试」询问，闭环不断在人手上
                 BridgeSetupActivity.startForResume(context)
             }
@@ -46,7 +49,7 @@ class InstallReceiver : BroadcastReceiver() {
             else ->
                 DebugFileLog.append(
                     context,
-                    "BRIDGE: 安装未完成 status=$status msg=$message",
+                    "BRIDGE: install not completed status=$status msg=$message",
                 )
         }
     }

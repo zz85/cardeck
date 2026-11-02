@@ -422,7 +422,10 @@ object VirtualLauncher {
         // 后才启动——这里每阻塞 1s 都直接吃掉「RECORD→首条 keepAlive」的 ~10s
         // 拆链预算（奥迪实测阈值）。
         if (!AppOrientationCompat.awaitPending()) {
-            log("ORIENTATION: ⚠ 覆盖写入未在 6s 内排空——应用可能带着旧方向配置启动（后台写完后首个启动的应用会被杀一次）")
+            log(
+                "ORIENTATION: ⚠ override writes not drained within 6s - app may start with the old orientation config " +
+                    "(the first app launched after the background write finishes will be killed once)",
+            )
         }
         val density = densityDpi / 160f
         // dock 栏宽度缩放（「显示」面板 50%–100%，下次连接起效）：厚度像素与 dock 屏
@@ -532,7 +535,7 @@ object VirtualLauncher {
             }
         }
         val useTrusted = svc != null
-        log("LAUNCHER: 虚拟屏模式=${if (useTrusted) "受信屏(shell)" else "应用屏(回退)"}")
+        log("LAUNCHER: virtual display mode=${if (useTrusted) "trusted(shell)" else "app(fallback)"}")
 
         val composer = DualDisplayComposer(encoderSurface, totalWidth, totalHeight, dockAtBottom)
         composer.targetFps =
@@ -557,7 +560,7 @@ object VirtualLauncher {
                                 it.name == "CarPlayMap"
                         }.forEach { stale ->
                             runCatching { svc!!.releaseDisplay(stale.displayId) }
-                                .onSuccess { log("LAUNCHER: 已释放残留虚拟屏 ${stale.name}#${stale.displayId}") }
+                                .onSuccess { log("LAUNCHER: released stale virtual display ${stale.name}#${stale.displayId}") }
                         }
                     Thread.sleep(150) // 等系统完成注销
                     // dock 屏不声明受信：只承载自有 DockActivity，杜绝第三方任务逃逸上来
@@ -617,7 +620,7 @@ object VirtualLauncher {
                             appHiDisplayW = appHiWidth
                             appHiDisplayH = appHiHeight
                         } else if (appHiSurface != null) {
-                            log("LAUNCHER: 超采样屏创建失败——本次会话全部走原生屏")
+                            log("LAUNCHER: supersample display creation failed - using native display for this whole session")
                         }
                         if (mapId >= 0) {
                             mapDisplayId = mapId
@@ -625,7 +628,7 @@ object VirtualLauncher {
                             mapDisplayW = appWidth
                             mapDisplayH = appHeightPx
                         } else if (mapSurface != null) {
-                            log("LAUNCHER: 地图屏创建失败——仪表盘无地图 tile")
+                            log("LAUNCHER: map display creation failed - dashboard has no map tile")
                         }
                         viaService = true
                     } else {
@@ -634,10 +637,13 @@ object VirtualLauncher {
                         // 「回退」两个字，无法判断是哪块屏被拒（华为 Mate30Pro/EMUI12
                         // 2026-10-20 实测定位）
                         if (dockId < 0) {
-                            log("LAUNCHER: 受信屏 CarPlayDock 创建失败（createVirtualDisplay 返回 null——ROM 限制 shell 侧虚拟屏？）")
+                            log(
+                                "LAUNCHER: trusted display CarPlayDock creation failed " +
+                                    "(createVirtualDisplay returned null - ROM restricts shell-side virtual displays?)",
+                            )
                         }
                         if (appId < 0) {
-                            log("LAUNCHER: 受信屏 CarPlayApp 创建失败（同上）")
+                            log("LAUNCHER: trusted display CarPlayApp creation failed (same as above)")
                         }
                         // 半成功：释放已建的
                         if (dockId >= 0) runCatching { svc!!.releaseDisplay(dockId) }
@@ -645,12 +651,12 @@ object VirtualLauncher {
                         if (appHiId >= 0) runCatching { svc!!.releaseDisplay(appHiId) }
                         if (mapId >= 0) runCatching { svc!!.releaseDisplay(mapId) }
                     }
-                }.onFailure { log("LAUNCHER: 受信屏创建异常 ${it.message}") }
+                }.onFailure { log("LAUNCHER: trusted display creation error ${it.message}") }
             }
             if (viaService) {
                 displaysViaService = true
                 log(
-                    "LAUNCHER: 三屏创建(受信) dock=$dockDisplayId(${dockWidthPx}px) " +
+                    "LAUNCHER: displays created (trusted) dock=$dockDisplayId(${dockWidthPx}px) " +
                         "app=$appDisplayId(${appWidth}x$appHeightPx @${appNativeDensity}dpi) " +
                         "appHi=$appHiDisplayId(${appHiWidth}x$appHiHeight @${appHiDensity}dpi scale=x$appScaleFactor)",
                 )
@@ -664,7 +670,7 @@ object VirtualLauncher {
                 }
                 // 覆盖写入是异步的（probe 内部会 awaitPending 等它排空）；
                 // 应用若已在运行且此前被当成竖窗恢复，这里就能发现并给出提示。
-                LetterboxHintController.scheduleProbe(context, "会话建立")
+                LetterboxHintController.scheduleProbe(context, "session start")
             } else {
                 // 回退：应用侧 PUBLIC 屏（应用内跳转任务会逃逸到手机主屏，尽量可用的降级形态）
                 val dm = context.getSystemService(Context.DISPLAY_SERVICE) as DisplayManager
@@ -732,7 +738,7 @@ object VirtualLauncher {
                         mapDisplayW = appWidth
                         mapDisplayH = appHeightPx
                     } else {
-                        log("LAUNCHER: 地图屏（回退）创建失败——仪表盘无地图 tile")
+                        log("LAUNCHER: map display (fallback) creation failed - dashboard has no map tile")
                     }
                 }
                 dockDisplayId = dockDisplay?.display?.displayId ?: -1
@@ -740,10 +746,11 @@ object VirtualLauncher {
                 appDisplayW = appWidth
                 appDisplayH = appHeightPx
                 log(
-                    "LAUNCHER: 三屏创建(回退) dock=$dockDisplayId(${dockWidthPx}px) " +
+                    "LAUNCHER: displays created (fallback) dock=$dockDisplayId(${dockWidthPx}px) " +
                         "app=$appDisplayId(${appWidth}x$appHeightPx @${appNativeDensity}dpi) " +
                         "appHi=$appHiDisplayId(${appHiWidth}x$appHiHeight @${appHiDensity}dpi scale=x$appScaleFactor) " +
-                        "map=$mapDisplayId(${mapDisplayW}x$mapDisplayH)——受信屏不可用，已回退应用侧 PUBLIC 屏",
+                        "map=$mapDisplayId(${mapDisplayW}x$mapDisplayH) - trusted displays unavailable, " +
+                        "fell back to app-side PUBLIC displays",
                 )
             }
             displaysCreated[0] = dockDisplayId >= 0 && appDisplayId >= 0
@@ -762,7 +769,7 @@ object VirtualLauncher {
             // 分屏把手位置推给合成器（覆盖默认中线公式；拖动时 previewDashSplit 持续更新）
             composer.setTileEdgeOverride(dashSplitPos - DASH_GAP_PX / 2f)
             if (!displaysCreated[0]) {
-                log("LAUNCHER: 虚拟屏创建失败")
+                log("LAUNCHER: virtual display creation failed")
                 detach()
                 return false
             }
@@ -776,7 +783,7 @@ object VirtualLauncher {
             // 放宽竖屏应用的 letterbox 窗口（默认窄条 → 手机宽度）；断开时还原（detach）
             Shell.exec("cmd window set-letterbox-style --aspectRatio $LETTERBOX_ASPECT_RATIO")
             log(
-                "LAUNCHER: letterbox 宽高比=$LETTERBOX_ASPECT_RATIO " +
+                "LAUNCHER: letterbox aspect ratio=$LETTERBOX_ASPECT_RATIO " +
                     "appDensity=${appNativeDensity}dpi appHiDensity=${appHiDensity}dpi",
             )
             // 自启组件必须写成「applicationId/绝对类名」：`am -n` 只认带斜杠的规范，
@@ -798,7 +805,7 @@ object VirtualLauncher {
                 .attach(context)
             dockOk && gridOk
         } catch (error: IllegalStateException) {
-            log("LAUNCHER: GL 合成器启动失败 - ${error.message}")
+            log("LAUNCHER: GL compositor failed to start - ${error.message}")
             detach()
             false
         }
@@ -912,7 +919,7 @@ object VirtualLauncher {
         val grid = if (gridDisplayId >= 0) gridDisplayId else appDisplayId
         val pkg = appContextRef?.packageName ?: return
         Bg.run("go-grid") {
-            if (!startOn(grid, "$pkg/${GridActivity::class.java.name}")) Log.w(TAG, "回桌面失败")
+            if (!startOn(grid, "$pkg/${GridActivity::class.java.name}")) Log.w(TAG, "failed to return to home screen")
         }
         composer?.requestActiveApp(appHiDisplayId >= 0 && grid == appHiDisplayId)
         // 桌面上的提示没有意义（顶层不是第三方应用），直接收起
@@ -948,7 +955,7 @@ object VirtualLauncher {
         syncDashboard(true)
         goGrid()
         composer?.requestActiveApp(appHiDisplayId >= 0 && gridDisplayId == appHiDisplayId)
-        logSink?.invoke("LAUNCHER: 仪表盘模式（地图 tile + 音乐卡）")
+        logSink?.invoke("LAUNCHER: dashboard mode (map tile + music card)")
     }
 
     /**
@@ -985,7 +992,7 @@ object VirtualLauncher {
     fun showDesktop() {
         syncDashboard(false)
         goGrid()
-        logSink?.invoke("LAUNCHER: 桌面模式（图标网格）")
+        logSink?.invoke("LAUNCHER: home mode (icon grid)")
     }
 
     /**
@@ -1005,12 +1012,12 @@ object VirtualLauncher {
             },
         )
         notifyMapLayout()
-        logSink?.invoke("LAUNCHER: 地图屏 ${if (fullscreen) "全屏" else "分屏"}")
+        logSink?.invoke("LAUNCHER: map display ${if (fullscreen) "fullscreen" else "split"}")
         // 地图屏 resize 后 letterbox 内外框变了：全屏时重探，分屏 tile 太小不提示
         if (fullscreen) {
             appContextRef?.let {
                 // resize 已生效，目标就是地图屏（不必等合成器切布局）
-                LetterboxHintController.scheduleProbe(it, "地图全屏", displayIdHint = mapDisplayId)
+                LetterboxHintController.scheduleProbe(it, "map fullscreen", displayIdHint = mapDisplayId)
             }
         } else {
             LetterboxHintController.clear()
@@ -1054,9 +1061,9 @@ object VirtualLauncher {
             ?.putFloat(PREF_KEY_DASH_SPLIT, dashSplitFraction)
             ?.apply()
         logSink?.invoke(
-            "LAUNCHER: 仪表盘分屏落定 ${if (dockAtBottom) "地图高" else "地图宽"}=" +
-                "${if (dockAtBottom) mapTileHeight else mapTileWidth}px（比例 " +
-                String.format("%.2f", dashSplitFraction) + "）",
+            "LAUNCHER: dashboard split settled ${if (dockAtBottom) "map height" else "map width"}=" +
+                "${if (dockAtBottom) mapTileHeight else mapTileWidth}px (ratio " +
+                String.format("%.2f", dashSplitFraction) + ")",
         )
         return clamped
     }
@@ -1156,7 +1163,7 @@ object VirtualLauncher {
                 // （tile 内容偏左、宽度只剩比例值、右侧全黑）
                 composer?.resizeMapInput(w, h)
                 logSink?.invoke(
-                    "LAUNCHER: 地图屏 resize → ${w}x$h@${MAP_DISPLAY_DPI}dpi（${if (fullscreen) "全屏" else "分屏"}）",
+                    "LAUNCHER: map display resize → ${w}x$h@${MAP_DISPLAY_DPI}dpi (${if (fullscreen) "fullscreen" else "split"})",
                 )
             }
         }
@@ -1181,13 +1188,13 @@ object VirtualLauncher {
         val result = startMapApp(component, mapDisplayId, forceNewTask = true)
         val ok = result.ok && result.output.contains("Starting:", ignoreCase = true)
         logSink?.invoke(
-            "LAUNCH(${component.packageName}): → 地图屏全屏 ok=$ok out=${result.output.take(80)}",
+            "LAUNCH(${component.packageName}): → map display fullscreen ok=$ok out=${result.output.take(80)}",
         )
         if (ok) {
             synchronized(runningApps) { runningApps.add(component) }
             notifyRunningAppsChanged()
             appContextRef?.let {
-                LetterboxHintController.scheduleProbe(it, "地图启动", displayIdHint = mapDisplayId)
+                LetterboxHintController.scheduleProbe(it, "map launch", displayIdHint = mapDisplayId)
             }
         }
         return ok
@@ -1221,7 +1228,7 @@ object VirtualLauncher {
             val ok = result.ok && result.output.contains("Starting:", ignoreCase = true)
             if (ok) return result
             logSink?.invoke(
-                "LAUNCH(${component.packageName}): 入口 $target 启动失败（${result.output.take(80)}）——尝试下一个候选",
+                "LAUNCH(${component.packageName}): entry $target failed to start (${result.output.take(80)}) - trying next candidate",
             )
             last = result
         }
@@ -1262,23 +1269,23 @@ object VirtualLauncher {
         if (mapDisplayId < 0) {
             // 诊断（2026-10-18「重装后地图卡不渲染」）：此前静默 return，无法区分
             // 「没创建地图屏」与「地图屏已创建但没启动 app」
-            logSink?.invoke("LAUNCHER: 地图屏未创建（mapDisplayId=-1）——跳过默认地图启动")
+            logSink?.invoke("LAUNCHER: map display not created (mapDisplayId=-1) - skipping default map launch")
             return
         }
         val ctx =
             appContextRef ?: run {
-                logSink?.invoke("LAUNCHER: appContext 未就绪——跳过默认地图启动")
+                logSink?.invoke("LAUNCHER: appContext not ready - skipping default map launch")
                 return
             }
         val component =
             defaultMapComponent(ctx) ?: run {
-                logSink?.invoke("LAUNCHER: 未找到任何地图应用（白名单内）——地图 tile 空")
+                logSink?.invoke("LAUNCHER: no map app found (in whitelist) - map tile empty")
                 return
             }
         // 不带 MULTIPLE_TASK：任务已在地图屏时等价于带回前台
         val result = startMapApp(component, mapDisplayId, forceNewTask = false)
         logSink?.invoke(
-            "LAUNCHER: 默认地图 ${component.packageName} → 地图屏（display=$mapDisplayId）ok=" +
+            "LAUNCHER: default map ${component.packageName} → map display (display=$mapDisplayId) ok=" +
                 (result.ok && result.output.contains("Starting:", ignoreCase = true)) +
                 (if (!result.ok) " err=${result.output.take(120)}" else ""),
         )
@@ -1327,7 +1334,7 @@ object VirtualLauncher {
             if (otherDisplay >= 0) {
                 tasksOf(tasks, component.packageName, otherDisplay).forEach { taskId ->
                     Shell.exec("am stack remove $taskId", timeoutMs = 4000)
-                    Log.i(TAG, "清理旧屏任务 pkg=${component.packageName} task=$taskId display=$otherDisplay")
+                    Log.i(TAG, "cleaning up task on old display pkg=${component.packageName} task=$taskId display=$otherDisplay")
                 }
             }
         }
@@ -1373,7 +1380,7 @@ object VirtualLauncher {
                 mapFullscreen = false
                 notifyDashboard()
                 composer?.setTileLayout(DualDisplayComposer.TileLayout.HIDDEN)
-                logSink?.invoke("LAUNCHER: 退出仪表盘（普通应用已打开）")
+                logSink?.invoke("LAUNCHER: leaving dashboard (regular app opened)")
             }
             // 合成器切到目标屏（超采样屏等其出帧再切；原生屏即时切换）
             composer?.requestActiveApp(targetDisplay == appHiDisplayId)
@@ -1381,10 +1388,10 @@ object VirtualLauncher {
             // letterbox（提示卡只对「应用横屏」名单内的应用生效，其它应用不计）
             val ctx = appContextRef
             if (ctx != null) {
-                LetterboxHintController.scheduleProbe(ctx, "应用启动", displayIdHint = targetDisplay)
+                LetterboxHintController.scheduleProbe(ctx, "app launch", displayIdHint = targetDisplay)
             }
         } else {
-            Log.w(TAG, "启动失败：${result.output.take(120)}")
+            Log.w(TAG, "launch failed: ${result.output.take(120)}")
         }
         return ok
     }
@@ -1461,7 +1468,7 @@ object VirtualLauncher {
             try {
                 pm.queryIntentActivities(intent, 0)
             } catch (error: Throwable) {
-                logSink?.invoke("LAUNCHER: 应用扫描失败 - ${error.message}（桌面将为空）")
+                logSink?.invoke("LAUNCHER: app scan failed - ${error.message} (home screen will be empty)")
                 return emptyList()
             }
         var skipped = 0
@@ -1491,8 +1498,8 @@ object VirtualLauncher {
             // 诊断留痕：用户反馈「少应用」时，凭这一行就能区分
             // 「系统只给了这么多 / 同包多入口被合并」与「标签/图标加载失败被跳过」
             logSink?.invoke(
-                "LAUNCHER: 应用扫描 系统返回 ${resolved.size} 个 activity → ${apps.size} 个应用" +
-                    if (skipped > 0) "（跳过 $skipped 个：标签/图标加载失败）" else "（同包多入口已合并）",
+                "LAUNCHER: app scan: system returned ${resolved.size} activities → ${apps.size} apps" +
+                    if (skipped > 0) " (skipped $skipped: label/icon load failed)" else " (multiple entries per package merged)",
             )
         }
         return apps.sortedBy { it.second }.map { it.first }
@@ -1578,11 +1585,14 @@ object VirtualLauncher {
         if (targets.isEmpty()) return
         val failed = targets.filter { id -> !setIgnoreOrientationRequest(id, true) }
         if (failed.isEmpty()) {
-            logSink?.invoke("LAUNCHER: 应用屏已忽略方向请求 ${targets.joinToString("/")}（防竖屏应用旋转虚拟屏）")
+            logSink?.invoke(
+                "LAUNCHER: app displays now ignore orientation requests ${targets.joinToString("/")} " +
+                    "(keeps portrait apps from rotating the virtual display)",
+            )
         } else {
             logSink?.invoke(
-                "LAUNCHER: ⚠ 应用屏忽略方向请求失败 $failed（读回非 true）" +
-                    "——竖屏应用可能旋转虚拟屏，导致画面比例异常与触摸漂移",
+                "LAUNCHER: ⚠ failed to make app displays ignore orientation requests $failed (read-back not true)" +
+                    " - portrait apps may rotate the virtual display, distorting the aspect ratio and causing touch drift",
             )
         }
     }
