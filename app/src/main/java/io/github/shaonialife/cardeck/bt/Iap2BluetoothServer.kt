@@ -48,10 +48,27 @@ class Iap2BluetoothServer(
          */
         val IPHONE_IAP2_UUID: UUID = UUID.fromString("00000000-deca-fade-deca-deafdecacafe")
         private const val SDP_NAME = "iAP2"
+
+        /** Service name the reference sender / a real iPhone publish for the smartBox. */
+        private const val ADAPTER_SDP_NAME = "Wireless iAP"
         private const val SESSION_TIMEOUT_MILLIS = 60_000L
+        private val CHANNEL_REGEX = Regex("Channel:\\s*(-?\\d+)")
     }
 
     private var serverSocket: AtomicReference<BluetoothServerSocket?> = AtomicReference(null)
+
+    /** SDP service name of the current listener. */
+    @Volatile
+    private var publishedName: String? = null
+
+    /**
+     * Set once an adapter session has handed over Wi-Fi credentials. The smartBox re-dials RFCOMM
+     * afterwards and repeats detect markers; the reference sender never answered them (CarPlay ran
+     * fine), so later connections are held open silently instead of starting a second bootstrap.
+     * Cleared by [stop] and [resetAdapterHandoff].
+     */
+    @Volatile
+    private var adapterHandedOff = false
 
     @Volatile
     private var activeChannel: Iap2LinkChannel? = null
@@ -66,7 +83,14 @@ class Iap2BluetoothServer(
             PackageManager.PERMISSION_GRANTED
 
     fun start(): Boolean {
-        if (running) return true
+        val wantedName = if (AdapterMode.active) ADAPTER_SDP_NAME else SDP_NAME
+        if (running) {
+            if (wantedName == publishedName || activeChannel != null) return true
+            // Adapter mode was decided after the record went out under the other name
+            log("ADAPTER: re-publishing the phone iAP2 service as \"$wantedName\" (was \"$publishedName\")")
+            running = false
+            serverSocket.getAndSet(null)?.let { runCatching { it.close() } }
+        }
         if (!hasPermission()) {
             log("BT: missing BLUETOOTH_CONNECT permission")
             return false
@@ -82,14 +106,24 @@ class Iap2BluetoothServer(
             return false
         }
         return try {
-            serverSocket.set(
-                adapter.listenUsingRfcommWithServiceRecord(SDP_NAME, IPHONE_IAP2_UUID),
-            )
+            val listener = adapter.listenUsingRfcommWithServiceRecord(wantedName, IPHONE_IAP2_UUID)
+            serverSocket.set(listener)
+            publishedName = wantedName
             running = true
             // toString() 形如「ServerSocket: Type: TYPE_RFCOMM Channel: N」：参考实现在
             // smartBox 上用的是信道 4，信道号对排查「车机不回连」有用。
-            log("BT: listening on $SDP_NAME (${serverSocket.get()}), waiting for receiver to connect back...")
-            Thread(::acceptLoop, "iap2-bt-accept").apply {
+            log("BT: listening on $wantedName ($listener), waiting for receiver to connect back...")
+            if (AdapterMode.active) {
+                // Android picks the RFCOMM channel. Forcing 4 (the reference's) would need an unbound
+                // BluetoothServerSocket(type, auth, encrypt, ParcelUuid) or BluetoothSocket.bindListen(),
+                // both blocked non-SDK APIs on Android 14; the box reads the channel from SDP anyway.
+                val channel = CHANNEL_REGEX.find(listener.toString())?.groupValues?.get(1) ?: "?"
+                log(
+                    "ADAPTER: published \"$wantedName\" (...decacafe) on RFCOMM channel $channel " +
+                        "(system-assigned; the reference used 4, forcing it is not possible without blocked hidden APIs)",
+                )
+            }
+            Thread({ acceptLoop(listener) }, "iap2-bt-accept").apply {
                 isDaemon = true
                 start()
             }
@@ -101,13 +135,13 @@ class Iap2BluetoothServer(
     }
 
     @SuppressLint("MissingPermission")
-    private fun acceptLoop() {
-        while (running) {
+    private fun acceptLoop(listener: BluetoothServerSocket) {
+        while (running && serverSocket.get() === listener) {
             val socket: BluetoothSocket =
                 try {
-                    serverSocket.get()?.accept() ?: break
+                    listener.accept() ?: break
                 } catch (error: IOException) {
-                    if (running) log("BT: accept failed - ${error.message}")
+                    if (running && serverSocket.get() === listener) log("BT: accept failed - ${error.message}")
                     break
                 }
             val peerName =
@@ -133,6 +167,17 @@ class Iap2BluetoothServer(
                 runCatching { socket.close() }
                 continue
             }
+            if (AdapterMode.active && adapterHandedOff) {
+                log(
+                    "ADAPTER: adapter re-dialed RFCOMM after the Wi-Fi handoff (name=$peerName) - holding it open without " +
+                        "answering its markers (reference behaviour; no second bootstrap)",
+                )
+                Thread({ holdSilently(socket) }, "iap2-bt-hold").apply {
+                    isDaemon = true
+                    start()
+                }
+                continue
+            }
             log("BT: receiver connected name=$peerName, starting iAP2 sender session")
             Thread({ runSession(socket) }, "iap2-bt-session").apply {
                 isDaemon = true
@@ -149,13 +194,22 @@ class Iap2BluetoothServer(
         val channel = Iap2LinkChannel(stream, name = "iap2-bt") { line -> log(line) }
         activeChannel = channel
         BtSessionGate.inboundActive = true
+        val credentialsHook: (Iap2SenderSession.WifiConfiguration) -> Unit =
+            if (channel.adapterMode) {
+                { wifi ->
+                    adapterHandedOff = true
+                    onWifiCredentials(wifi)
+                }
+            } else {
+                onWifiCredentials
+            }
         try {
             channel.runSenderSession(
                 context,
                 SESSION_TIMEOUT_MILLIS,
                 log,
                 onEndpoint,
-                onWifiCredentials,
+                credentialsHook,
                 onEndpointUpdate,
                 onLinkClosed,
                 knownCarSsid,
@@ -178,11 +232,48 @@ class Iap2BluetoothServer(
             channel.close()
             log("BT: closed current control session (simulated retirement after tunnel handoff)")
         }
+        closeHeldSockets()
+    }
+
+    /** Forget an earlier adapter Wi-Fi handoff so the next RFCOMM connection gets a full bootstrap. */
+    fun resetAdapterHandoff() {
+        adapterHandedOff = false
+        closeHeldSockets()
+    }
+
+    private val heldSockets = java.util.Collections.synchronizedSet(HashSet<BluetoothSocket>())
+
+    private fun holdSilently(socket: BluetoothSocket) {
+        heldSockets += socket
+        var bytes = 0L
+        try {
+            val input = socket.inputStream
+            val buffer = ByteArray(1024)
+            while (true) {
+                val count = input.read(buffer)
+                if (count < 0) break
+                bytes += count
+            }
+        } catch (_: IOException) {
+            // closed by either side
+        } finally {
+            heldSockets -= socket
+            runCatching { socket.close() }
+            log("ADAPTER: held post-handoff RFCOMM connection closed ($bytes bytes ignored)")
+        }
+    }
+
+    private fun closeHeldSockets() {
+        val sockets = synchronized(heldSockets) { heldSockets.toList() }
+        sockets.forEach { runCatching { it.close() } }
     }
 
     fun stop() {
         running = false
+        adapterHandedOff = false
+        closeHeldSockets()
         serverSocket.getAndSet(null)?.let { runCatching { it.close() } }
+        publishedName = null
         log("BT: listener stopped")
     }
 }

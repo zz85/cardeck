@@ -24,13 +24,17 @@ internal fun Iap2LinkChannel.runSenderSession(
     /** 0x1D01 画像判定的链路代际（CLASSIC_MIB3/EVENT_LINK），Phase 1 完成后回调。 */
     onGeneration: (ReceiverProfile.LinkGeneration) -> Unit = {},
 ) {
+    var wifiHandedOff = false
     val session =
         Iap2SenderSession(
             this,
             { line -> log(line) },
             resolveBluetoothMac(context, log),
             DeviceIdentity.deviceName(context),
-            onWifiCredentials,
+            { wifi ->
+                wifiHandedOff = true
+                onWifiCredentials(wifi)
+            },
             onEndpointUpdate,
             knownCarSsid,
             // MFi 挑战长度按车机身份持久化（省掉 20B 静默 6 秒的试探）
@@ -41,6 +45,12 @@ internal fun Iap2LinkChannel.runSenderSession(
     onEndpoint(endpoint)
     // Phase 2 过渡：保持控制通道存活记录配件消息；AirPlay 配对由 onEndpoint 回调发起
     session.pumpIncomingForever()
+    if (adapterMode && wifiHandedOff) {
+        // The box drops (and re-dials) Bluetooth itself once Wi-Fi is handed over (reference field
+        // logs); that's the normal course here, not a dead round to release.
+        log("ADAPTER: Bluetooth link closed by the adapter after the Wi-Fi handoff - pairing round left running")
+        return
+    }
     // 链路断开（保活泵退出）：通知主控释放「会话处理中」——否则车机拆链后重连带来的
     // 新端点会被僵尸轮次堵门（2026-10-22 奥迪 3315 真机定谳，见 SessionController.onSenderLinkClosed）
     onLinkClosed()

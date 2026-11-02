@@ -81,6 +81,57 @@ object EndpointHosts {
         return localIpv6.any { ipv6Prefix64(it) == candidate }
     }
 
+    /** Where an adapter-mode AirPlay host came from (logged so a wrong pick can be traced). */
+    enum class AdapterHostSource { MDNS, DHCP_SERVER, CTRL_INVITE, GATEWAY }
+
+    data class AdapterHost(
+        val host: String,
+        val source: AdapterHostSource,
+    )
+
+    /**
+     * Picks the wireless-adapter AirPlay host. The smartBox Wi-Fi is router-less (DHCP server
+     * 192.168.1.101, no default route) and its SRV target is the malformed `(none).local.`
+     * (unapple-phone NEXT_STEPS "Local smartBox field result"), so mDNS may yield no address and
+     * the gateway is usually null. Order: mDNS address → DHCP server → ctrl invite peer → gateway.
+     * Each candidate must be a real IP literal (not a host name like `(none)`, unspecified or loopback).
+     */
+    fun chooseAdapterHost(
+        mdnsAddress: String?,
+        dhcpServer: String?,
+        invitePeer: String? = null,
+        gateway: String? = null,
+    ): AdapterHost? =
+        listOf(
+            mdnsAddress to AdapterHostSource.MDNS,
+            dhcpServer to AdapterHostSource.DHCP_SERVER,
+            invitePeer to AdapterHostSource.CTRL_INVITE,
+            gateway to AdapterHostSource.GATEWAY,
+        ).firstNotNullOfOrNull { (host, source) ->
+            host?.trim()?.takeIf(::isUsableAdapterAddress)?.let { AdapterHost(it, source) }
+        }
+
+    /** Strict IP-literal check (unlike [isIpv4], which accepts any dotted text such as `(none).local.`). */
+    fun isUsableAdapterAddress(host: String?): Boolean {
+        val base = host?.trim()?.let(::stripScope) ?: return false
+        if (isIpv4Literal(base)) return base != "0.0.0.0" && !base.startsWith("127.")
+        val groups = expandIpv6(base) ?: return false
+        val unspecifiedOrLoopback = groups.dropLast(1).all { it == "0000" } && (groups.last() == "0000" || groups.last() == "0001")
+        return !unspecifiedOrLoopback
+    }
+
+    /** SRV target names that can't resolve (the smartBox publishes `(none).local.`). */
+    fun isMalformedSrvTarget(hostName: String?): Boolean {
+        val name = hostName?.trim()?.trimEnd('.')?.lowercase() ?: return true
+        return name.isEmpty() || name.startsWith("(none)")
+    }
+
+    private fun isIpv4Literal(host: String): Boolean {
+        val parts = host.split('.')
+        return parts.size == 4 &&
+            parts.all { part -> part.length in 1..3 && part.all(Char::isDigit) && part.toInt() <= 255 }
+    }
+
     /** IPv6 的前 64 位（前 4 组 hextet，展开后比较；解析失败返回 null）。 */
     fun ipv6Prefix64(host: String): String? {
         val groups = expandIpv6(stripScope(host)) ?: return null

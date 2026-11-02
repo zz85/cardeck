@@ -347,7 +347,7 @@ class Iap2BluetoothClient(
             StreamDuplexStream(socket.inputStream, socket.outputStream) {
                 runCatching { socket.close() }
             }
-        val channel = Iap2LinkChannel(stream, name = "iap2-bt-car") { line -> log(line) }
+        val channel = Iap2LinkChannel(stream, name = "iap2-bt-car", adapterMode = false) { line -> log(line) }
         activeChannel = channel
         try {
             channel.runSenderSession(

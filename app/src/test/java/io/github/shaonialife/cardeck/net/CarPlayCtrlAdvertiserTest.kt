@@ -27,6 +27,28 @@ class CarPlayCtrlAdvertiserTest {
     }
 
     @Test
+    fun nonAdapterResponseIsUnchanged() {
+        val expected = "HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+        assertEquals(expected, CarPlayCtrlAdvertiser.ctrlResponse(SMARTBOX_CONNECT, adapterMode = false))
+        assertEquals(expected, CarPlayCtrlAdvertiser.ctrlResponse("GET /info HTTP/1.1\r\n\r\n", adapterMode = false))
+    }
+
+    @Test
+    fun adapterConnectGetsKeepAlive200() {
+        // smartBox invite captured by unapple-phone (UA AirPlay/320.17.6)
+        val response = CarPlayCtrlAdvertiser.ctrlResponse(SMARTBOX_CONNECT, adapterMode = true)
+        assertEquals("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n", response)
+        assertTrue(!response.contains("Connection: close"))
+        val withCseq = CarPlayCtrlAdvertiser.ctrlResponse("GET /ctrl-int/1/connect RTSP/1.0\r\nCSeq: 3\r\n\r\n", adapterMode = true)
+        assertEquals("RTSP/1.0 200 OK\r\nContent-Length: 0\r\nCSeq: 3\r\n\r\n", withCseq)
+        // Other requests keep the old reply even in adapter mode.
+        assertEquals(
+            "HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+            CarPlayCtrlAdvertiser.ctrlResponse("GET /info HTTP/1.1\r\n\r\n", adapterMode = true),
+        )
+    }
+
+    @Test
     fun deviceInfoIsNotAdvertised() {
         // _device-info._tcp 曾以 port=0 注册并必然失败（The port is missing）。
         // 若将来要恢复，必须先确认 NsdManager 接受合法端口且该车机确有此需求。
@@ -36,3 +58,7 @@ class CarPlayCtrlAdvertiserTest {
         )
     }
 }
+
+private const val SMARTBOX_CONNECT =
+    "GET /ctrl-int/1/connect HTTP/1.1\r\nHost: phone.local.\r\nUser-Agent: AirPlay/320.17.6\r\n" +
+        "AirPlay-Receiver-Device-ID: 73588229206\r\n\r\n"

@@ -7,6 +7,7 @@ import android.view.Surface
 import io.github.shaonialife.cardeck.airplay.AirPlayCrypto
 import io.github.shaonialife.cardeck.airplay.BinaryPlist
 import io.github.shaonialife.cardeck.airplay.StreamFrameCipher
+import io.github.shaonialife.cardeck.bt.AdapterMode
 import io.github.shaonialife.cardeck.net.TcpLiveness
 import java.io.ByteArrayOutputStream
 import java.net.InetSocketAddress
@@ -60,6 +61,17 @@ class VideoSender(
     private val running = AtomicBoolean(false)
     private var frameCounter = 0L
     private var configSent = false
+
+    /** Wireless-adapter session (decided per connection before the sender is built). */
+    private val adapterMode = AdapterMode.active
+
+    /** Adapter mode: holds old-GOP frames until the re-prime IDR (see [reprime]). */
+    private val rePrimeGate = RePrimeGate()
+
+    /** Last VideoConfig message (header + avcC), resent in front of a re-prime IDR. */
+    @Volatile
+    private var lastConfigMessage: ByteArray? = null
+    private var rePrimeDropped = 0
 
     /** AES-CTR 密钥流实例：状态必须跨帧连续（每帧新建会导致对端解出乱码）。 */
     private val aesStream: AirPlayCrypto.Aes128CtrStream? =
@@ -133,6 +145,13 @@ class VideoSender(
                     setInteger(MediaFormat.KEY_BIT_RATE, bitrate)
                     setInteger(MediaFormat.KEY_FRAME_RATE, targetFps)
                     setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
+                    if (adapterMode) {
+                        // The smartBox's hardware decoder showed black for a non-Baseline stream and
+                        // displayed Baseline (profile 66) in the reference field run; ask for it explicitly.
+                        runCatching {
+                            setInteger(MediaFormat.KEY_PROFILE, MediaCodecInfo.CodecProfileLevel.AVCProfileBaseline)
+                        }
+                    }
                     // 固定 H.264 level 4.0（SPS level_idc=40，真 iPhone 同款流形态）。
                     // 不固定时编码器按「分辨率+帧率」自动选：默认 30fps 下 1412x654
                     // 合法落入 level 3.2——奥迪 DELPHI 解码器对该 level 静默不渲染
@@ -201,6 +220,7 @@ class VideoSender(
      * （宝马 iD9 2026-10-20 实测：会话刚起时收到一次 forceKeyFrame）。
      */
     fun requestKeyFrame(): Boolean {
+        if (adapterMode && lastConfigMessage != null) return reprime("forceKeyFrame")
         val codec = encoder ?: return false
         return try {
             val params = android.os.Bundle()
@@ -209,6 +229,27 @@ class VideoSender(
             true
         } catch (error: Exception) {
             log("VIDEO: keyframe request failed - ${error.message}")
+            false
+        }
+    }
+
+    /**
+     * Re-prime the receiver's decoder: request an IDR, hold back the old GOP until it arrives,
+     * and resend VideoConfig right in front of it (adapter `requestUI`/`forceKeyFrame`; the car
+     * tears its decoder down while its native UI owns the screen).
+     */
+    fun reprime(reason: String): Boolean {
+        val codec = encoder ?: return false
+        if (lastConfigMessage == null) return false
+        return try {
+            rePrimeGate.request(android.os.SystemClock.uptimeMillis())
+            val params = android.os.Bundle()
+            params.putInt(MediaCodec.PARAMETER_KEY_REQUEST_SYNC_FRAME, 0)
+            codec.setParameters(params)
+            log("VIDEO: re-prime requested ($reason) - next frames start at a fresh IDR after VideoConfig")
+            true
+        } catch (error: Exception) {
+            log("VIDEO: re-prime request failed - ${error.message}")
             false
         }
     }
@@ -337,6 +378,7 @@ class VideoSender(
         output.write(body)
         output.flush()
         configSent = true
+        if (adapterMode) lastConfigMessage = header + body
         log(
             "VIDEO: ✓ VideoConfig sent avcC=${body.size}B (SPS ${sps.size}B/PPS ${pps.size}B, " +
                 "profile=${sps[1].toInt() and 0xFF} level=${sps[3].toInt() and 0xFF} " +
@@ -354,6 +396,29 @@ class VideoSender(
         if (!configSent) {
             log("VIDEO: dropped a frame (config not sent yet)")
             return
+        }
+        if (adapterMode && rePrimeGate.pending) {
+            when (rePrimeGate.onFrame(keyFrame, android.os.SystemClock.uptimeMillis())) {
+                RePrimeGate.Decision.SEND -> Unit
+                RePrimeGate.Decision.DROP -> {
+                    rePrimeDropped++
+                    return
+                }
+                RePrimeGate.Decision.SEND_WITH_CONFIG,
+                RePrimeGate.Decision.SEND_WITH_CONFIG_TIMEOUT,
+                -> {
+                    lastConfigMessage?.let { message ->
+                        output.write(message)
+                        output.flush()
+                    }
+                    log(
+                        "VIDEO: re-prime → VideoConfig resent before " +
+                            (if (keyFrame) "IDR" else "a non-key frame (no IDR within ${RePrimeGate.DEFAULT_MAX_WAIT_MS}ms)") +
+                            ", $rePrimeDropped old-GOP frames held back",
+                    )
+                    rePrimeDropped = 0
+                }
+            }
         }
         val annexB = ByteArray(size)
         buffer.get(annexB)

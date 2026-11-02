@@ -54,6 +54,11 @@ class Iap2SenderSession(
      * 内存表（单测/纯 JVM），不影响协议流程。
      */
     private val context: android.content.Context? = null,
+    /**
+     * Adapter mode only: pause between link NORMAL and 0x1D00. The reference sender needed it
+     * (IAP2_BOOTSTRAP_DELAY_MS=1000: "keeps the final link ACK separate from StartIdentification").
+     */
+    private val adapterIdentificationDelayMillis: Long = 1_000L,
 ) {
     /** 从 0x5703 + 0x4301 解析出的接收端信息。 */
     data class CarPlayEndpoint(
@@ -184,6 +189,15 @@ class Iap2SenderSession(
 
         /** 真车系接收端特征（0x1D01 name/model/manufacturer 子串，小写比对）。 */
         private val LEGACY_RECEIVER_MARKERS = listOf("audi", "delphi", "mib", "harman", "porsche")
+
+        /** Adapter mode waits on the link only (~100 days; avoids nanoTime overflow). */
+        const val ADAPTER_NO_DEADLINE_NANOS = 100L * 24 * 3_600 * 1_000_000_000L
+
+        /** Adapter-mode MFi challenge order: the smartBox answers 20 B (reference field result). */
+        private val ADAPTER_MFI_ORDER = listOf(20, 32, 16)
+
+        /** 0x4E0A value the reference sent to the smartBox (its 0x1D01 lists en/ko). */
+        const val ADAPTER_LANGUAGE = "en"
     }
 
     /** 从 0x1D01 提取接收端身份文本（name/model/manufacturer 小写拼接）——MFi 挑战长度选择用。 */
@@ -197,6 +211,7 @@ class Iap2SenderSession(
     }
 
     fun run(timeoutMillis: Long = 60_000L): CarPlayEndpoint {
+        if (channel.adapterMode) return runAdapter()
         val deadline = System.nanoTime() + timeoutMillis * 1_000_000L
         if (!channel.awaitReady(remainingMillis(deadline))) {
             throw IOException("iAP2 link negotiation timed out")
@@ -495,6 +510,131 @@ class Iap2SenderSession(
     }
 
     /**
+     * Adapter-mode control session, ported from the field-tested reference sender
+     * (unapple-phone bootstrap.rs/bootstrap_rx.rs Path::Carlinkit, smartBox-136F):
+     * 0x1D00 → 0x1D01 → 0x1D02+0xAA00 → 0xAA01 → 0xAA02(20 B) → 0xAA03 → 0xAA05+0x5702 → 0x5703
+     * → 0x4E0A/0x4E0B/0x4E0D/0x4E0E/0x4300. No deadlines: the box ends the link itself (it drops
+     * Bluetooth after AirPlay's disableBluetooth), so this never times out on its own.
+     */
+    private fun runAdapter(): CarPlayEndpoint {
+        val noDeadline = System.nanoTime() + ADAPTER_NO_DEADLINE_NANOS
+        while (!channel.awaitReady(60_000L)) {
+            if (!channel.isAlive) throw IOException("iAP2 link closed before the adapter finished link negotiation")
+            log("ADAPTER: still waiting for the adapter's SYN / ACK (link held open)")
+        }
+        log(
+            "ADAPTER: iap2 link ready peerMaxControl=${channel.peerMaxControlPayload()} - " +
+                "waiting $adapterIdentificationDelayMillis ms before 0x1D00",
+        )
+        if (adapterIdentificationDelayMillis > 0) {
+            try {
+                Thread.sleep(adapterIdentificationDelayMillis)
+            } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+                throw IOException("interrupted before 0x1D00")
+            }
+        }
+        if (!channel.isAlive) throw IOException("iAP2 link closed before 0x1D00")
+
+        send(Iap2MessageIds.START_IDENTIFICATION)
+        log("ADAPTER: tx=0x1d00 StartIdentification")
+        val identification = adapterExpect(Iap2MessageIds.IDENTIFICATION_INFORMATION, noDeadline)
+        logIdentification(identification)
+        send(Iap2MessageIds.IDENTIFICATION_ACCEPTED)
+        send(Iap2MessageIds.MFI_REQUEST_CERTIFICATE)
+        log("ADAPTER: tx=0x1d02 identification-accepted + 0xaa00 request certificate")
+        val certificate = adapterExpect(Iap2MessageIds.MFI_CERTIFICATE, noDeadline)
+        log("ADAPTER: rx=0xaa01 certificate bytes=${certificate.body.size} (verification skipped)")
+        // The reference: "the smartBox answers 20 B" - 20 first whatever MfiLengthMemory says
+        runMfiChallenge(noDeadline, receiverKey = identityText(identification), forcedOrder = ADAPTER_MFI_ORDER)
+        send(Iap2MessageIds.MFI_AUTHENTICATION_SUCCEEDED)
+        send(Iap2MessageIds.REQUEST_ACCESSORY_WIFI_CONFIGURATION)
+        log("ADAPTER: tx=0xaa05 authentication-succeeded + 0x5702 request Wi-Fi configuration (no greetings first, no 0x6800 wait)")
+
+        val wifiFrame = adapterExpect(Iap2MessageIds.ACCESSORY_WIFI_CONFIGURATION, noDeadline)
+        val wifiConfiguration = parseWifiConfiguration(wifiFrame)
+        this.wifi = wifiConfiguration
+        log(
+            "ADAPTER: rx=0x5703 ssid=${wifiConfiguration.ssid} channel=${wifiConfiguration.channel} " +
+                "security=${wifiConfiguration.securityType} psk=${if (wifiConfiguration.passphrase.isEmpty()) "(empty)" else "***"}" +
+                " - starting Wi-Fi join now, Bluetooth bootstrap continues",
+        )
+        // Queue the burst first (non-blocking), then hand off: the join starts while BT continues.
+        sendAdapterBurst()
+        onWifiCredentials?.invoke(wifiConfiguration)
+
+        // 0x4301 may or may not come (the box's 0x1D01 declares only 0x5703); a later one is
+        // handled by the keep-alive pump, a second 0x5703 is only logged there (no second burst).
+        val startSession =
+            if (accessoryDeclaresSend(Iap2MessageIds.CARPLAY_START_SESSION) == false) {
+                log("ADAPTER: adapter doesn't declare 0x4301 - AirPlay endpoint via known SSID / mDNS / gateway")
+                null
+            } else {
+                val received = expectOrNull(Iap2MessageIds.CARPLAY_START_SESSION, System.nanoTime() + START_SESSION_WAIT_NANOS)
+                if (received == null) {
+                    log("ADAPTER: no 0x4301 within ${START_SESSION_WAIT_NANOS / 1_000_000_000}s - using mDNS / gateway")
+                }
+                received
+            }
+        val endpoint =
+            if (startSession != null) {
+                logStartSessionRaw(startSession)
+                parseStartSession(startSession, wifiConfiguration).also {
+                    log("ADAPTER: rx=0x4301 airPlayPort=${it.airPlayPort} ips=${it.ipAddresses}")
+                }
+            } else {
+                CarPlayEndpoint(
+                    ssid = wifiConfiguration.ssid,
+                    passphrase = wifiConfiguration.passphrase,
+                    channel = wifiConfiguration.channel,
+                    securityType = wifiConfiguration.securityType,
+                    airPlayPort = 0,
+                    deviceIdentifier = null,
+                    publicKey = null,
+                    sourceVersion = null,
+                    ipAddresses = emptyList(),
+                )
+            }
+        log("ADAPTER: Bluetooth bootstrap done - RFCOMM held open until the adapter drops it")
+        return endpoint
+    }
+
+    /** Adapter-mode device-state burst after 0x5703, in the reference/iPhone order. */
+    private fun sendAdapterBurst() {
+        val transportId = AdapterTransportId.get(context)
+        send(Iap2MessageIds.DEVICE_LANGUAGE_UPDATE, Iap2Csm.string(0, ADAPTER_LANGUAGE))
+        val nowMillis = System.currentTimeMillis()
+        val timezoneMinutes =
+            java.util.TimeZone
+                .getDefault()
+                .getOffset(nowMillis) / 60_000
+        send(
+            Iap2MessageIds.DEVICE_TIME_UPDATE,
+            Iap2Csm.param(0, u64Bytes(nowMillis / 1000L)) + Iap2Csm.u16(1, timezoneMinutes and 0xFFFF),
+        )
+        send(Iap2MessageIds.WIRELESS_CARPLAY_UPDATE, Iap2Csm.u8(0, 1))
+        send(
+            Iap2MessageIds.DEVICE_TRANSPORT_IDENTIFIER,
+            Iap2Csm.string(0, bluetoothMac) + Iap2Csm.string(1, transportId),
+        )
+        send(
+            Iap2MessageIds.CARPLAY_AVAILABILITY,
+            Iap2Csm.group(1, Iap2Csm.u8(0, 1), Iap2Csm.string(1, bluetoothMac)),
+        )
+        log(
+            "ADAPTER: tx burst 0x4e0a(lang=$ADAPTER_LANGUAGE) 0x4e0b(tz=${timezoneMinutes}min) 0x4e0d(available=1) " +
+                "0x4e0e(bt=$bluetoothMac udid=$transportId) 0x4300",
+        )
+    }
+
+    private fun adapterExpect(
+        messageId: Int,
+        deadline: Long,
+    ): Iap2Csm.Frame =
+        expectOrNull(messageId, deadline)
+            ?: throw IOException("iAP2 link closed while waiting for 0x${messageId.toString(16)} (adapter mode)")
+
+    /**
      * Phase 2 过渡：bring-up 完成后保持链路打开，持续记录配件发来的控制消息
      * （如 0x4E0E 后重发的 0x5703、位置请求 0xFFFA 等），直到链路断开。
      * 真实无线 CarPlay 中这条控制通道与 AirPlay 会话并存于整个连接生命周期。
@@ -602,6 +742,8 @@ class Iap2SenderSession(
         deadline: Long,
         prefer20First: Boolean = false,
         receiverKey: String,
+        /** Fixed length order that ignores [MfiLengthMemory] (adapter mode: 20 B first). */
+        forcedOrder: List<Int>? = null,
     ) {
         val baselineLengths =
             if (prefer20First) {
@@ -610,8 +752,8 @@ class Iap2SenderSession(
                 MFI_ATTEMPTS.map { it.first }
             }
         val windowOf = MFI_ATTEMPTS.associate { it.first to it.second }
-        val memory = MfiLengthMemory.load(context, receiverKey)
-        val order = MfiLengthMemory.orderAttempts(baselineLengths, memory)
+        val memory = if (forcedOrder != null) MfiLengthMemory.Entry() else MfiLengthMemory.load(context, receiverKey)
+        val order = forcedOrder ?: MfiLengthMemory.orderAttempts(baselineLengths, memory)
         if (!memory.isEmpty) {
             log(
                 "iap2 MFi per head unit memory ($receiverKey): ${MfiLengthMemory.describe(memory)}" +

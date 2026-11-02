@@ -4,6 +4,7 @@ import android.content.Context
 import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
 import android.os.SystemClock
+import io.github.shaonialife.cardeck.bt.AdapterMode
 import io.github.shaonialife.cardeck.util.Bg
 import io.github.shaonialife.cardeck.util.DeviceIdentity
 import java.io.BufferedInputStream
@@ -53,6 +54,38 @@ class CarPlayCtrlAdvertiser(
         /** 测试可见：本类实际广播的服务类型全集（目前只有 ctrl；_device-info 已移除）。 */
         internal fun advertisedServiceTypesForTest(): List<String> = listOf(SERVICE_TYPE)
 
+        private const val CLOSE_RESPONSE = "HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+
+        /**
+         * Reply to one ctrl request. Non-adapter: the Audi-verified `Connection: close` 200, unchanged.
+         * Adapter mode, `/ctrl-int/`: keep-alive 200 echoing the request's protocol token and CSeq, as the
+         * reference responder the smartBox accepted (unapple-phone `carplay_ctrl::connect_response`).
+         */
+        internal fun ctrlResponse(
+            head: String,
+            adapterMode: Boolean,
+        ): String {
+            val requestLine = head.lineSequence().firstOrNull().orEmpty()
+            if (!adapterMode || !requestLine.startsWith("GET /ctrl-int/")) return CLOSE_RESPONSE
+            val proto =
+                requestLine
+                    .trim()
+                    .split(' ')
+                    .getOrNull(2)
+                    ?.takeIf { it.isNotBlank() } ?: "HTTP/1.1"
+            val cseq =
+                head
+                    .lineSequence()
+                    .firstOrNull { it.substringBefore(':').trim().equals("CSeq", ignoreCase = true) }
+                    ?.substringAfter(':')
+                    ?.trim()
+            return buildString {
+                append("$proto 200 OK\r\nContent-Length: 0\r\n")
+                if (!cseq.isNullOrEmpty()) append("CSeq: $cseq\r\n")
+                append("\r\n")
+            }
+        }
+
         private const val TAG = "CTRL"
         private const val MAX_HEAD_BYTES = 16 * 1024
 
@@ -85,6 +118,23 @@ class CarPlayCtrlAdvertiser(
     fun resetInviteCount() {
         inviteCount = 0
     }
+
+    /**
+     * Adapter mode: source address of the box's latest `GET /ctrl-int/1/connect` (= the box; the
+     * reference sender connects to `invite.peer:7000`). A host fallback when mDNS can't resolve it.
+     */
+    @Volatile
+    var lastInvitePeer: String? = null
+        private set
+
+    /** [SystemClock.uptimeMillis] of [lastInvitePeer]'s invite (0 = none yet). */
+    @Volatile
+    var lastInviteAtMillis: Long = 0L
+        private set
+
+    /** Adapter mode only: called (on a background thread) after each connect invite is answered. */
+    @Volatile
+    var onInvite: ((peer: String?) -> Unit)? = null
 
     /** 注册时的 WiFi SSID：换网（2.4G→5G 或车机热点切换）后旧注册不可见，需重新注册。 */
     private var registeredSsid: String? = null
@@ -301,20 +351,27 @@ class CarPlayCtrlAdvertiser(
             }
 
             val output = client.getOutputStream()
-            val response =
-                when {
-                    requestLine.startsWith("GET /ctrl-int/") -> {
-                        log("$TAG: ✓ answered ctrl-int probe 200 OK")
-                        "HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
-                    }
-
-                    else -> {
-                        log("$TAG: unrecognized request, answering empty 200 (refine later as needed)")
-                        "HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
-                    }
-                }
+            val adapter = AdapterMode.active
+            if (adapter && requestLine.startsWith("GET /ctrl-int/1/connect")) {
+                lastInvitePeer = client.inetAddress?.hostAddress
+                lastInviteAtMillis = SystemClock.uptimeMillis()
+            }
+            val response = ctrlResponse(head, adapter)
+            if (requestLine.startsWith("GET /ctrl-int/")) {
+                log("$TAG: ✓ answered ctrl-int probe 200 OK${if (adapter) " (keep-alive, adapter mode)" else ""}")
+            } else {
+                log("$TAG: unrecognized request, answering empty 200 (refine later as needed)")
+            }
             output.write(response.toByteArray(Charsets.US_ASCII))
             output.flush()
+            if (adapter && requestLine.startsWith("GET /ctrl-int/1/connect")) {
+                // The box re-invites every ~17 s until a session is live (unapple-phone run 20261026T192344Z);
+                // the hook lets the session layer react. Duplicate-session guarding is the hook's job.
+                onInvite?.let { hook ->
+                    val peer = lastInvitePeer
+                    Bg.run("ctrl-invite-hook") { hook(peer) }
+                }
+            }
 
             // 对端 Connection: close 会自行断开；等待期间若还有字节（隧道/事件），转储出来
             client.soTimeout = 3_000

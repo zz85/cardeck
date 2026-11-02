@@ -6,12 +6,15 @@ import io.github.shaonialife.cardeck.audio.AudioCodec
 import io.github.shaonialife.cardeck.audio.AudioProfile
 import io.github.shaonialife.cardeck.audio.AudioSender
 import io.github.shaonialife.cardeck.audio.AudioTuning
+import io.github.shaonialife.cardeck.bt.AdapterMode
+import io.github.shaonialife.cardeck.iap2.AdapterTransportId
 import io.github.shaonialife.cardeck.iap2.Iap2Csm
 import io.github.shaonialife.cardeck.iap2.Iap2MessageIds
 import io.github.shaonialife.cardeck.iap2.Iap2SenderSession
 import io.github.shaonialife.cardeck.iap2.ReceiverProfile
 import io.github.shaonialife.cardeck.net.EndpointHosts
 import io.github.shaonialife.cardeck.net.TcpLiveness
+import io.github.shaonialife.cardeck.shizuku.Shell
 import io.github.shaonialife.cardeck.util.DeviceIdentity
 import java.io.IOException
 import java.net.Inet6Address
@@ -473,6 +476,7 @@ class AirPlayClient(
         runCatching { iapTunnel?.socket?.close() }
         iapTunnel = null
         iapLink = null
+        resetAdapterSessionState()
         // 注意：controlIapTx 不在这里 shutdown——close() 会被同实例的重试路径
         // （retryWithPairing 等）复用，杀掉执行器会废掉重连后的 MIB3 出站；
         // 守护线程常驻的代价可忽略（每客户端实例一根）
@@ -489,6 +493,12 @@ class AirPlayClient(
         deviceUuidHex: String,
         mode: Int = 0,
     ): Boolean {
+        if (AdapterMode.active) {
+            // Apple's 320.17 receiver reads requests only on the control channel; the reference
+            // sender never sends this and the smartBox's touch works without it.
+            log("AIRPLAY: adapter mode - skipping hidSetInputMode uuid=$deviceUuidHex (event channel)")
+            return false
+        }
         val sent =
             postEventCommand(
                 linkedMapOf(
@@ -657,7 +667,24 @@ class AirPlayClient(
             log("AIRPLAY: timing server not started (continuing, but media clock cannot sync)")
         }
         val deviceId = setupDeviceId()
-        val body = buildSessionSetupBody(deviceId, timingServer.port, encrypted = cipher != null)
+        val adapterMac =
+            if (AdapterMode.active) {
+                wifiMacAddress().also { mac ->
+                    log(
+                        "AIRPLAY: adapter mode SETUP identity deviceID=$deviceId macAddress=" +
+                            (mac ?: "$DEFAULT_SETUP_MAC_ADDRESS (Wi-Fi interface MAC not readable)"),
+                    )
+                }
+            } else {
+                null
+            }
+        val body =
+            buildSessionSetupBody(
+                deviceId,
+                timingServer.port,
+                encrypted = cipher != null,
+                macAddress = adapterMac ?: DEFAULT_SETUP_MAC_ADDRESS,
+            )
         log(
             "AIRPLAY: initial SETUP body=${body.size}B timingPort=${timingServer.port} " +
                 "deviceID=$deviceId encrypted=${if (cipher != null) "yes" else "no (et=NONE)"}",
@@ -804,6 +831,7 @@ class AirPlayClient(
                 // 奥迪 MMI 3315 声明 true：屏幕流 keepAlive 用 opcode=5 带 bplist 统计体
                 keepAliveSendStatsAsBody = (infoRoot?.get("keepAliveSendStatsAsBody") as? Boolean) == true,
             )
+        sessionEnabledFeatures = info.enabledFeatures
         log(
             "AIRPLAY: ✓ SETUP done eventPort=${info.eventPort} timingPort=${info.timingPort} " +
                 "keepAlive=${info.keepAlivePort ?: "none"} features=${info.enabledFeatures} " +
@@ -1193,6 +1221,12 @@ class AirPlayClient(
             log("TUNNEL: unpaired session has no shared key - skipping iAP tunnel (touch unavailable)")
             return null
         }
+        if (AdapterMode.active && "iAPChannel" !in sessionEnabledFeatures) {
+            // Apple's 320.17 has no stream type 130 and a failed SetUpStreams fires sessionFailed;
+            // the reference only sets it up when the receiver enables iAPChannel.
+            log("TUNNEL: adapter mode, iAPChannel not enabled ($sessionEnabledFeatures) - Wi-Fi iAP2 runs over the control channel")
+            return null
+        }
         val host = receiverHost() ?: return null
         val seed = (System.currentTimeMillis() % 0x7FFF_FFFFL) + 1L
         val connectionId = java.security.SecureRandom().nextLong() and Long.MAX_VALUE or 1L
@@ -1357,6 +1391,12 @@ class AirPlayClient(
 
     /** 车机 iAPSendMessage 字节入口（SessionController 事件命令处理器调用）。 */
     fun onIapEventBytes(data: ByteArray) {
+        if (AdapterMode.active) {
+            // Open the control-channel gate before the link answers (see allowsControlIapPost).
+            boxIapSeen = true
+            obtainAdapterIapLink().onCarBytes(data)
+            return
+        }
         obtainIapLink().onCarBytes(data)
     }
 
@@ -1368,6 +1408,10 @@ class AirPlayClient(
     private fun armMib3VirtualLink() {
         if (cipher == null) return
         if (iapTunnel != null) return // DiPlay 隧道形态：不需要（也不该）布防
+        if (AdapterMode.active) {
+            log("IAPLINK: adapter mode - no DETECT; the Wi-Fi iAP2 tunnel waits for the box's first iAPSendMessage")
+            return
+        }
         val generation = linkGeneration ?: ReceiverProfile.LinkGeneration.EVENT_LINK
         obtainIapLink().setGeneration(generation)
         obtainIapLink().armMib3()
@@ -1387,6 +1431,13 @@ class AirPlayClient(
     private var controlIapCount = 0
 
     fun postControlIap(frame: ByteArray) {
+        if (!allowsControlIapPost()) {
+            prematureIapDropped++
+            if (prematureIapDropped <= 3) {
+                log("IAPLINK: adapter mode - dropped ${frame.size}B control-channel iAPSendMessage before the box spoke first")
+            }
+            return
+        }
         controlIapTx.execute {
             try {
                 val body =
@@ -1414,12 +1465,222 @@ class AirPlayClient(
                 // 链路引擎，别让它白躺在响应里。
                 if (reply.isNotEmpty() && looksLikeIapLink(reply)) {
                     log("IAPLINK: control channel reply has link bytes ${reply.size}B → feeding link engine")
-                    iapLink?.onCarBytes(reply)
+                    if (AdapterMode.active) adapterIapLink?.onCarBytes(reply) else iapLink?.onCarBytes(reply)
                 }
             } catch (error: IOException) {
                 log("IAPLINK: control channel POST failed - ${error.message}")
             }
         }
+    }
+
+    // ---- Wireless CarPlay adapter mode (AdapterMode.active only) ----
+    // Wireless transition as in the reference sender (unapple-phone phone.rs): RECORD, the
+    // receive-driven Wi-Fi iAP2 tunnel, disableBluetooth{deviceID = BT MAC}, then RFCOMM release.
+
+    /** `disableBluetooth` answered 200 (the box now starts its Wi-Fi iAP2 tunnel). Once per session. */
+    var onDisableBluetoothAccepted: (() -> Unit)? = null
+
+    /** Inner Wi-Fi iAP2 control session is up (authenticated, 0xAA05 burst sent). Once per session. */
+    var onIapTunnelReady: (() -> Unit)? = null
+
+    /**
+     * Convenience for the RFCOMM owner: fires once when both of the above happened, or 10 s after
+     * `disableBluetooth` was accepted if the tunnel never came up (reference behaviour).
+     */
+    var onBluetoothReleasable: ((reason: String) -> Unit)? = null
+
+    /**
+     * The box sent `requestUI` (the screen was already re-taken with modesChanged): the video must
+     * be re-primed with VideoConfig + a fresh IDR (reference 853f400/1d7a4e6).
+     */
+    var onRequestUI: (() -> Unit)? = null
+
+    /** 0x4E0E USB transport id on the Wi-Fi tunnel; null = [AdapterTransportId] (the same id the Bluetooth session sends). */
+    @Volatile
+    var iapTransportId: String? = null
+
+    @Volatile
+    var disableBluetoothAccepted: Boolean = false
+        private set
+
+    @Volatile
+    var iapTunnelReady: Boolean = false
+        private set
+
+    @Volatile
+    private var boxIapSeen = false
+
+    @Volatile
+    private var disableBluetoothSent = false
+
+    @Volatile
+    private var adapterSessionEpoch = 0
+
+    private val bluetoothReleaseFired =
+        java.util.concurrent.atomic
+            .AtomicBoolean(false)
+    private val requestUiQueued =
+        java.util.concurrent.atomic
+            .AtomicBoolean(false)
+    private var prematureIapDropped = 0
+
+    @Volatile
+    private var adapterIapLink: AdapterIapLink? = null
+
+    /** enabledFeatures of the current session SETUP (adapter mode gates type-130 on iAPChannel). */
+    @Volatile
+    private var sessionEnabledFeatures: List<String> = emptyList()
+
+    private val adapterUiTx =
+        java.util.concurrent.Executors.newSingleThreadExecutor { r ->
+            Thread(r, "adapter-ui").apply { isDaemon = true }
+        }
+
+    /**
+     * Receive-driven gate: in adapter mode no control-channel `iAPSendMessage` may leave before the
+     * box sent one (posting first makes the 320.17 box close the control connection).
+     */
+    internal fun allowsControlIapPost(): Boolean = !AdapterMode.active || boxIapSeen
+
+    private fun resetAdapterSessionState() {
+        adapterSessionEpoch++
+        adapterIapLink = null
+        boxIapSeen = false
+        disableBluetoothSent = false
+        disableBluetoothAccepted = false
+        iapTunnelReady = false
+        bluetoothReleaseFired.set(false)
+        prematureIapDropped = 0
+        sessionEnabledFeatures = emptyList()
+    }
+
+    private fun obtainAdapterIapLink(): AdapterIapLink =
+        adapterIapLink ?: synchronized(this) {
+            adapterIapLink ?: run {
+                val owner = socket
+                val epoch = adapterSessionEpoch
+                AdapterIapLink(
+                    log = { line -> log(line) },
+                    post = ::postControlIap,
+                    bluetoothId = { setupDeviceId().uppercase() },
+                    transportId = { iapTransportId ?: AdapterTransportId.get(context) },
+                    alive = { owner != null && !owner.isClosed && socket === owner },
+                ).also { link ->
+                    link.onReady = { onAdapterTunnelReady(epoch) }
+                    adapterIapLink = link
+                }
+            }
+        }
+
+    private fun onAdapterTunnelReady(epoch: Int) {
+        if (epoch != adapterSessionEpoch) return
+        iapTunnelReady = true
+        dispatchAdapterCallback {
+            onIapTunnelReady?.invoke()
+            // The second control session resets the box's arbitration: restart the modesChanged
+            // re-assert burst (+1.5/4/12/30 s) as the reference does when the tunnel is up.
+            onTunnelControlSessionComplete?.invoke()
+        }
+        maybeReleaseBluetooth(epoch, "disableBluetooth accepted and Wi-Fi iAP2 tunnel up")
+    }
+
+    private fun maybeReleaseBluetooth(
+        epoch: Int,
+        reason: String,
+    ) {
+        if (epoch != adapterSessionEpoch || !disableBluetoothAccepted) return
+        if (!bluetoothReleaseFired.compareAndSet(false, true)) return
+        log("AIRPLAY: adapter mode - Bluetooth RFCOMM may be released ($reason)")
+        dispatchAdapterCallback { onBluetoothReleasable?.invoke(reason) }
+    }
+
+    /** Callbacks leave the link/RTSP threads (they may block or call back into this client). */
+    private fun dispatchAdapterCallback(block: () -> Unit) {
+        Thread({ runCatching(block).onFailure { log("AIRPLAY: adapter callback failed - ${it.message}") } }, "adapter-callback")
+            .apply { isDaemon = true }
+            .start()
+    }
+
+    /**
+     * `POST /command {type: disableBluetooth, params: {deviceID: <our BT MAC>}}` on the control
+     * channel, once per session. The box stops its Bluetooth iAP2 and starts the Wi-Fi tunnel only
+     * after this returns 200 (reference run 043046Z). Called automatically after RECORD in adapter mode.
+     */
+    fun sendDisableBluetooth(): Boolean {
+        if (disableBluetoothSent) return disableBluetoothAccepted
+        disableBluetoothSent = true
+        val epoch = adapterSessionEpoch
+        val mac = setupDeviceId().uppercase()
+        if (mac == DeviceIdentity.PLACEHOLDER_MAC) {
+            log("AIRPLAY: ⚠ disableBluetooth with placeholder deviceID $mac (real Bluetooth MAC not resolved) - the box may ignore it")
+        }
+        return try {
+            val (statusLine, reply) =
+                request(
+                    "POST",
+                    "/command",
+                    BinaryPlist.encode(disableBluetoothCommand(mac)),
+                    timeoutMillis = 5_000,
+                    contentType = "application/x-apple-binary-plist",
+                )
+            val ok = statusLine.contains("200")
+            log(
+                "AIRPLAY: disableBluetooth deviceID=$mac [$statusLine]" +
+                    (if (reply.isEmpty()) "" else " resp=${reply.size}B") +
+                    if (ok) " - waiting for the box's Wi-Fi iAP2 tunnel" else "",
+            )
+            if (ok && epoch == adapterSessionEpoch) {
+                disableBluetoothAccepted = true
+                dispatchAdapterCallback { onDisableBluetoothAccepted?.invoke() }
+                if (iapTunnelReady) {
+                    maybeReleaseBluetooth(epoch, "Wi-Fi iAP2 tunnel already up")
+                } else {
+                    Thread({
+                        runCatching { Thread.sleep(BLUETOOTH_RELEASE_FALLBACK_MS) }
+                        maybeReleaseBluetooth(epoch, "${BLUETOOTH_RELEASE_FALLBACK_MS / 1000}s after disableBluetooth, tunnel not up")
+                    }, "adapter-bt-release").apply {
+                        isDaemon = true
+                        start()
+                    }
+                }
+            }
+            ok
+        } catch (error: IOException) {
+            log("AIRPLAY: disableBluetooth failed - ${error.message}")
+            false
+        }
+    }
+
+    /** Box `requestUI`: take the screen again, then let the host re-prime the video. Coalesces bursts. */
+    private fun onAdapterRequestUI() {
+        if (!requestUiQueued.compareAndSet(false, true)) return
+        adapterUiTx.execute {
+            requestUiQueued.set(false)
+            log("AIRPLAY: adapter mode - box requestUI → modesChanged (take screen) + video re-prime")
+            assertModes()
+            runCatching { onRequestUI?.invoke() }.onFailure { log("AIRPLAY: requestUI re-prime failed - ${it.message}") }
+        }
+    }
+
+    /**
+     * Wi-Fi interface MAC for the session SETUP `macAddress` (reference: the interface address,
+     * Bluetooth MAC stays in deviceID). Android 11+ hides it from apps, so fall back to the Shizuku
+     * shell reading sysfs; null if neither works.
+     */
+    private fun wifiMacAddress(): String? {
+        val local = socket?.localAddress
+        val nic =
+            local?.let { runCatching { NetworkInterface.getByInetAddress(it) }.getOrNull() }
+                ?: wifiInterface()
+                ?: return null
+        runCatching { nic.hardwareAddress }
+            .getOrNull()
+            ?.takeIf { it.size == 6 }
+            ?.let { raw -> normalizeMacAddress(raw.joinToString(":") { "%02X".format(it) }) }
+            ?.let { return it }
+        val name = nic.name.takeIf { it.matches(Regex("[A-Za-z0-9_.-]+")) } ?: return null
+        val result = runCatching { Shell.exec("cat /sys/class/net/$name/address", timeoutMs = 2_000) }.getOrNull()
+        return normalizeMacAddress(result?.output)
     }
 
     /** 应答体的十六进制前缀（诊断用，截断到 24 字节）。 */
@@ -1579,6 +1840,12 @@ class AirPlayClient(
 
         /** 隧道 APTransportPackage 头长（4B BE 总长 + 12B 保留 + 4B type="comm" + 12B 保留）。 */
         private const val TUNNEL_PACKAGE_HEADER_BYTES = 32
+
+        /** Session SETUP `macAddress` when no Wi-Fi MAC is known (unchanged legacy value). */
+        const val DEFAULT_SETUP_MAC_ADDRESS = "aa:bb:cc:dd:ee:ff"
+
+        /** Adapter mode: release RFCOMM this long after disableBluetooth even if the tunnel is not up (reference). */
+        private const val BLUETOOTH_RELEASE_FALLBACK_MS = 10_000L
 
         /** RTSP 报文头结束分隔符与头部字段正则（请求/应答两条重组路径共用，勿再内联）。 */
         private val HEAD_SEPARATOR = "\r\n\r\n".toByteArray(Charsets.US_ASCII)
@@ -2075,6 +2342,9 @@ class AirPlayClient(
                 )
             val ok = statusLine.contains("200")
             log(if (ok) "AIRPLAY: ✓ RECORD done - session active" else "AIRPLAY: RECORD reply [$statusLine]")
+            // Adapter wireless order: disableBluetooth right after the session is live. CarDeck's
+            // screen SETUP and modesChanged already ran before RECORD, so this is the earliest point.
+            if (ok && AdapterMode.active && !disableBluetoothSent) sendDisableBluetooth()
             ok
         } catch (error: IOException) {
             log("AIRPLAY: RECORD failed - ${error.message}")
@@ -2213,6 +2483,7 @@ class AirPlayClient(
                                 continue
                             }
                             try {
+                                if (AdapterMode.active && command["type"] == "requestUI") onAdapterRequestUI()
                                 onCommand(command)
                             } catch (error: Exception) {
                                 log("EVENT: command handling error - ${error.message}")
@@ -2764,11 +3035,13 @@ class AirPlayClient(
         timingPort: Int,
         /** false = 未配对/未加密会话：必须显式带 `et=NONE`（catplay do_initial_setup 同款）。 */
         encrypted: Boolean = true,
+        /** Adapter mode passes the Wi-Fi interface MAC; everyone else keeps the legacy value. */
+        macAddress: String = DEFAULT_SETUP_MAC_ADDRESS,
     ): ByteArray {
         val fields =
             linkedMapOf<String, Any?>(
                 "deviceID" to deviceId,
-                "macAddress" to "aa:bb:cc:dd:ee:ff",
+                "macAddress" to macAddress,
                 "name" to "iPhone",
                 "model" to "iPhone14,2",
                 "osName" to "iPhone OS",
@@ -2902,3 +3175,19 @@ class AirPlayClient(
  * 其余失败（端口未开等）保持快速轮询等邀请。
  */
 internal fun pairingRetryBackoffMs(failureMessage: String): Long = if (failureMessage.contains("403")) 5_000L else 500L
+
+/** `disableBluetooth` command body: deviceID is "MAC address of Bluetooth device to disable connectivity to" (Apple). */
+internal fun disableBluetoothCommand(bluetoothMac: String): Map<String, Any?> =
+    linkedMapOf(
+        "type" to "disableBluetooth",
+        "params" to linkedMapOf<String, Any?>("deviceID" to bluetoothMac.uppercase()),
+    )
+
+private val MAC_ADDRESS_REGEX = Regex("([0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}")
+
+/** First MAC in [text] as upper-case colon form; null for none or the all-zero / Android placeholder. */
+internal fun normalizeMacAddress(text: String?): String? {
+    val found = text?.let { MAC_ADDRESS_REGEX.find(it)?.value } ?: return null
+    val mac = found.replace('-', ':').uppercase()
+    return mac.takeIf { it != "02:00:00:00:00:00" && it != "00:00:00:00:00:00" }
+}

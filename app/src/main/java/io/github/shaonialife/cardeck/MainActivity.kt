@@ -27,6 +27,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import androidx.core.graphics.drawable.DrawableCompat
+import io.github.shaonialife.cardeck.bt.AdapterMode
 import io.github.shaonialife.cardeck.bt.BtProfiles
 import io.github.shaonialife.cardeck.bt.TargetDevicePrefs
 import io.github.shaonialife.cardeck.input.TouchRouter
@@ -1566,6 +1567,9 @@ class MainActivity : AppCompatActivity() {
         stopDiscoveryOnly()
         pendingBondAddress = address
         val name = deviceDisplayName(device)
+        if (AdapterMode.looksLikeAdapter(name)) {
+            SessionController.listenForAdapterPairing(applicationContext)
+        }
         val ok =
             try {
                 device.createBond()
@@ -1665,6 +1669,12 @@ class MainActivity : AppCompatActivity() {
                 // 先关弹窗再提示：snackbar 在 Activity 窗口内，弹窗未关时会被盖住
                 dialog.dismiss()
                 setTarget(device, name)
+                if (AdapterMode.looksLikeAdapter(name)) {
+                    // Wireless CarPlay adapters connect to the phone themselves; dropping their
+                    // profiles right after pairing would only get in the way.
+                    log("BT-PAIR: \"$name\" looks like a wireless CarPlay adapter - tap \"Connect\" and wait for it to connect")
+                    return
+                }
                 // 「只配对、不连接」：系统/车机在配对完成后常会自动建立 HFP/A2DP
                 // 连接，而奥迪实测这种「已连接」状态会让车机拒绝 CarPlay。立即与
                 // 1.5s 后各断一次（车机侧重连通常在这两个时间点之间发生）。

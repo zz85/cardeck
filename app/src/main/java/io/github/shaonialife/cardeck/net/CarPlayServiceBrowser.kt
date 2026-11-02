@@ -1,8 +1,14 @@
 package io.github.shaonialife.cardeck.net
 
 import android.content.Context
+import android.net.ConnectivityManager
 import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
+import android.os.Build
+import io.github.shaonialife.cardeck.bt.AdapterMode
+import io.github.shaonialife.cardeck.util.Bg
+import java.net.InetAddress
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * mDNS 服务发现：找到接收端（车机/xcertplay）广播的 _airplay._tcp，
@@ -21,9 +27,16 @@ class CarPlayServiceBrowser(
         const val AIRPLAY_TYPE = "_airplay._tcp"
         const val CARPLAY_CTRL_TYPE = "_carplay-ctrl._tcp"
         private const val TAG = "NSD"
+
+        /** Adapter mode: how long a resolve may stay silent before we synthesize the endpoint. */
+        private const val ADAPTER_RESOLVE_TIMEOUT_MS = 4_000L
+
+        /** smartBox `_airplay._tcp` port (field capture smartbox_local_20261026.json). */
+        private const val ADAPTER_AIRPLAY_PORT = 7000
     }
 
     private val nsdManager = context.getSystemService(Context.NSD_SERVICE) as NsdManager
+    private val connectivityManager = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
     private var discovering = false
 
     /**
@@ -108,6 +121,10 @@ class CarPlayServiceBrowser(
         serviceInfo: NsdServiceInfo,
         attempts: Int,
     ) {
+        // Adapter mode only: the smartBox's SRV target is `(none).local.`, so resolution can fail,
+        // hang, or return no usable host (unapple-phone NEXT_STEPS "Local smartBox field result").
+        val adapter = AdapterMode.active && serviceInfo.serviceType.orEmpty().contains(AIRPLAY_TYPE)
+        val settled = AtomicBoolean(false)
         val listener =
             object : NsdManager.ResolveListener {
                 override fun onResolveFailed(
@@ -115,34 +132,111 @@ class CarPlayServiceBrowser(
                     errorCode: Int,
                 ) {
                     if (errorCode == NsdManager.FAILURE_ALREADY_ACTIVE && attempts > 1) {
+                        settled.set(true)
                         Thread {
                             Thread.sleep(200)
                             resolveWithRetry(info, attempts - 1)
                         }.start()
                     } else {
                         log("$TAG: resolve failed ${info.serviceName} code=$errorCode")
+                        if (adapter && settled.compareAndSet(false, true)) {
+                            deliverAdapterFallback(info, "resolve failed code=$errorCode")
+                        }
                     }
                 }
 
                 override fun onServiceResolved(info: NsdServiceInfo) {
-                    val host = info.host?.hostAddress ?: "no-host"
-                    val txt =
-                        info.attributes.entries.joinToString(", ") { (key, value) ->
-                            val text =
-                                value
-                                    ?.toString(Charsets.UTF_8)
-                                    ?.trimEnd { it.code == 0 }
-                                    .orEmpty()
-                            "$key=$text"
-                        }
-                    // 验收放在缓存之前：非车机端点（如同一 WiFi 上的 Mac）不得污染 awaitEndpoint
-                    val accepted = accept(info)
-                    log("$TAG: OK ${info.serviceName} -> $host:${info.port}${if (accepted) "" else " (not a head unit, ignored)"}")
-                    if (txt.isNotEmpty()) log("$TAG: TXT $txt")
-                    if (accepted) resolved = info
-                    onEndpoint(info)
+                    settled.set(true)
+                    if (adapter) repairAdapterHost(info)
+                    deliver(info)
                 }
             }
         nsdManager.resolveService(serviceInfo, listener)
+        if (adapter) {
+            Bg.run("nsd-adapter-resolve-watchdog") {
+                try {
+                    Thread.sleep(ADAPTER_RESOLVE_TIMEOUT_MS)
+                } catch (_: InterruptedException) {
+                    return@run
+                }
+                if (!settled.compareAndSet(false, true)) return@run
+                // A pending resolve blocks later ones on the same NSD client; stop it where the API exists.
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                    runCatching { nsdManager.stopServiceResolution(listener) }
+                }
+                deliverAdapterFallback(serviceInfo, "no resolve callback in ${ADAPTER_RESOLVE_TIMEOUT_MS}ms")
+            }
+        }
+    }
+
+    private fun deliver(info: NsdServiceInfo) {
+        val host = info.host?.hostAddress ?: "no-host"
+        val txt =
+            info.attributes.entries.joinToString(", ") { (key, value) ->
+                val text =
+                    value
+                        ?.toString(Charsets.UTF_8)
+                        ?.trimEnd { it.code == 0 }
+                        .orEmpty()
+                "$key=$text"
+            }
+        // 验收放在缓存之前：非车机端点（如同一 WiFi 上的 Mac）不得污染 awaitEndpoint
+        val accepted = accept(info)
+        log("$TAG: OK ${info.serviceName} -> $host:${info.port}${if (accepted) "" else " (not a head unit, ignored)"}")
+        if (txt.isNotEmpty()) log("$TAG: TXT $txt")
+        if (accepted) resolved = info
+        onEndpoint(info)
+    }
+
+    /** Replaces an unusable resolved host with the DHCP server / gateway of the bound network. */
+    private fun repairAdapterHost(info: NsdServiceInfo) {
+        val address = info.host?.hostAddress
+        // InetAddress.toString() is "name/literal" without a reverse lookup; the name is the SRV target.
+        val target = info.host?.toString()?.substringBefore('/')
+        if (target != null && target.isNotEmpty() && EndpointHosts.isMalformedSrvTarget(target)) {
+            log("$TAG: adapter ${info.serviceName} has malformed SRV target \"$target\" (resolved address=${address ?: "none"})")
+        }
+        val choice =
+            EndpointHosts.chooseAdapterHost(
+                mdnsAddress = address,
+                dhcpServer = AdapterNetwork.dhcpServer(connectivityManager, connectivityManager.boundNetworkForProcess),
+                gateway = AdapterNetwork.defaultGateway(connectivityManager, connectivityManager.boundNetworkForProcess),
+            )
+        if (choice == null) {
+            log("$TAG: adapter ${info.serviceName} resolved without a usable host (host=${info.host}) and no DHCP server/gateway")
+            return
+        }
+        if (choice.source != EndpointHosts.AdapterHostSource.MDNS) {
+            log("$TAG: adapter ${info.serviceName} resolved host=${info.host} unusable - using ${choice.source} ${choice.host}")
+            runCatching { info.host = InetAddress.getByName(choice.host) }
+        }
+        if (info.port <= 0) info.port = ADAPTER_AIRPLAY_PORT
+    }
+
+    /** Resolution failed/hung for the adapter's `_airplay._tcp`: synthesize an endpoint (no TXT). */
+    private fun deliverAdapterFallback(
+        info: NsdServiceInfo,
+        reason: String,
+    ) {
+        val fallback = AdapterNetwork.fallbackHost(connectivityManager, connectivityManager.boundNetworkForProcess)
+        if (fallback == null) {
+            log("$TAG: adapter ${info.serviceName}: $reason, and the bound network has no DHCP server/gateway - no fallback")
+            return
+        }
+        val port = if (info.port > 0) info.port else ADAPTER_AIRPLAY_PORT
+        val synthesized =
+            try {
+                NsdServiceInfo().apply {
+                    serviceName = info.serviceName
+                    serviceType = info.serviceType
+                    host = InetAddress.getByName(fallback.host)
+                    setPort(port)
+                }
+            } catch (error: Exception) {
+                log("$TAG: adapter fallback endpoint build failed (${error.message})")
+                return
+            }
+        log("$TAG: adapter ${info.serviceName}: $reason - using ${fallback.source} ${fallback.host}:$port (box SRV target is unresolvable)")
+        deliver(synthesized)
     }
 }

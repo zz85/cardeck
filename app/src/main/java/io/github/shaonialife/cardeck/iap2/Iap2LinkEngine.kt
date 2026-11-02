@@ -184,6 +184,26 @@ class Iap2LinkEngine(
      */
     private var declaredMaxOutgoing = maxOutgoing
 
+    /** 重传计时与上限：默认取构造参数；适配器模式改用盒子 SYN 声明的值。 */
+    private var retransmitMillis = retransmissionTimeoutMillis
+    private var retransmitLimit = maxRetransmissions
+
+    /**
+     * Wireless CarPlay adapter (smartBox) responder mode, per the field-tested reference sender
+     * (unapple-phone link.rs AwaitPeer + echo_peer_parameters): we never send our own SYN; the box's
+     * first SYN payload is echoed byte-for-byte in a SYN|ACK, its parameters (one-packet window,
+     * retransmit timeout/limit, session IDs) drive our sending, and the link is NORMAL only once
+     * the box ACKs that SYN|ACK. Default false: every other path is unchanged.
+     */
+    var adapterResponder: Boolean = false
+
+    /** Adapter-mode phase log lines (marker/SYN/SYN|ACK echo/link ready). */
+    var onAdapterEvent: ((String) -> Unit)? = null
+
+    private var adapterSynPayload: ByteArray? = null
+    private var adapterSynSequence: Int? = null
+    private var adapterEchoSequence = INITIAL_SEQUENCE
+
     /** 进入协商：发 marker + 同步包（发送端=发起方，不等待对端 marker）。 */
     fun start(nowMillis: Long) {
         if (state != State.IDLE) return
@@ -298,7 +318,10 @@ class Iap2LinkEngine(
             if (state == State.NEGOTIATING) {
                 // 已采纳对端表：只补裸 ACK（回显仅首次发一次，避免协商轮次膨胀）；
                 // 未采纳：继续重发本表 SYN（测试台时序）
-                if (adoptedSynchronization != null) {
+                if (adapterResponder) {
+                    // The reference re-sends its SYN|ACK every 500 ms until the box ACKs it
+                    sendAdapterEcho()
+                } else if (adoptedSynchronization != null) {
                     sendAcknowledgement()
                 } else {
                     sendSynchronization()
@@ -404,7 +427,9 @@ class Iap2LinkEngine(
             // 发起方 SYN，属于「它已应答」的信号（见下方 ACK 分支），再回一条就会形成
             // 双方互回 SYN|ACK 的无限乒乓（单测暴露：两个引擎互相喂帧时协商永不收敛）。
             val isPureSyn = (control and CONTROL_ACKNOWLEDGEMENT) == 0
-            if (sync != null && isPureSyn && (state == State.NEGOTIATING || echoFirst)) {
+            if (adapterResponder) {
+                if (sync != null && isPureSyn) handleAdapterSyn(sync, payload!!, sequence, nowMillis)
+            } else if (sync != null && isPureSyn && (state == State.NEGOTIATING || echoFirst)) {
                 val firstAdoption = adoptedSynchronization == null
                 peerSynchronization = sync
                 if (firstAdoption) adoptedSynchronization = sync
@@ -482,8 +507,62 @@ class Iap2LinkEngine(
             state = State.NORMAL
             markerDeadline = null
             syncDeadline = null
+            if (adapterResponder) onAdapterEvent?.invoke("rx ACK of our SYN|ACK (ack=$lastSentAcknowledged) - link NORMAL")
             drainSendWindow(nowMillis)
         }
+    }
+
+    /**
+     * Adapter-mode answer to a pure SYN. smartBox-136F field capture (reference iap2.log,
+     * 2026-10-26): box SYN `01 01 0080 140b 1017 10 03 01 00 02` (window 1, 128-byte packets,
+     * control session 1/v2) -> phone SYN|ACK seq=99 with exactly that payload -> box ACK.
+     */
+    private fun handleAdapterSyn(
+        sync: SynchronizationPayload,
+        payload: ByteArray,
+        sequence: Int,
+        nowMillis: Long,
+    ) {
+        if (state == State.NORMAL) {
+            // A late copy of the SYN we answered (no box data yet) gets the identical echo;
+            // anything else is a restart the bootstrap can't recover from, so only report it.
+            if (sequence == adapterSynSequence && lastReceivedInOrder == sequence) {
+                sendAdapterEcho()
+                onAdapterEvent?.invoke("rx duplicate SYN seq=$sequence on the established link - re-sent the same SYN|ACK")
+            } else {
+                onAdapterEvent?.invoke("rx SYN seq=$sequence on the established link - ignored (adapter restarted its link?)")
+            }
+            return
+        }
+        if (state != State.NEGOTIATING) return
+        if (adapterSynPayload == null) {
+            adapterSynPayload = payload.copyOf()
+            adapterSynSequence = sequence
+            adapterEchoSequence = sentSequence
+            peerSynchronization = sync
+            adoptedSynchronization = sync
+            sync.sessions.firstOrNull { it.kind == CONTROL_KIND }?.let { adoptedPeerControlSessionId = it.id }
+            declaredMaxOutgoing = sync.maxOutgoing.coerceAtLeast(1)
+            if (sync.retransmissionTimeoutMillis > 0) retransmitMillis = sync.retransmissionTimeoutMillis.toLong()
+            retransmitLimit = sync.maxRetransmissions
+            onPeerSynchronizationAdopted?.invoke(sync)
+        }
+        lastReceivedInOrder = sequence
+        markerDeadline = null
+        sendAdapterEcho()
+        syncDeadline = nowMillis + SYNC_RESEND_MILLIS
+        onAdapterEvent?.invoke(
+            "rx SYN seq=$sequence -> tx SYN|ACK seq=$adapterEchoSequence ack=$sequence echoing the first SYN " +
+                "byte-for-byte (${adapterSynPayload!!.joinToString("") { "%02x".format(it) }}); window=$declaredMaxOutgoing " +
+                "retransmit=${retransmitMillis}ms x$retransmitLimit maxLen=${sync.maxLength} " +
+                "control session=${adoptedPeerControlSessionId ?: SESSION_CONTROL}",
+        )
+    }
+
+    private fun sendAdapterEcho() {
+        val echo = adapterSynPayload ?: return
+        writePacket(echo, adapterEchoSequence, CONTROL_SYNCHRONIZE or CONTROL_ACKNOWLEDGEMENT, 0)
+        onSynchronizationEchoSent?.invoke()
     }
 
     private fun reportUnknownSessionData(
@@ -540,6 +619,8 @@ class Iap2LinkEngine(
         acknowledgement: Int,
         nowMillis: Long,
     ) {
+        // Adapter mode: record the ACK first so the one-packet window applies from the first data frame
+        if (adapterResponder) lastSentAcknowledged = acknowledgement
         completeNegotiationIfPending(nowMillis)
         lastSentAcknowledged = acknowledgement
         val window = (peerSynchronization?.maxOutgoing ?: maxOutgoing) + ACK_SLACK
@@ -585,7 +666,7 @@ class Iap2LinkEngine(
             sendBacklog.removeFirst()
             sentSequence = nextSequence(sentSequence)
             packet.sequence = sentSequence
-            packet.deadlineMillis = nowMillis + retransmissionTimeoutMillis
+            packet.deadlineMillis = nowMillis + retransmitMillis
             writePacket(packet.payload, packet.sequence, CONTROL_ACKNOWLEDGEMENT, controlSessionId())
             if (!packet.awaitAck) continue // 发后不管：不追踪、不重传（见 sendControl 注释）
             if (peer == null || peer.maxRetransmissions > 0) {
@@ -602,9 +683,9 @@ class Iap2LinkEngine(
 
     private fun retransmitDue(nowMillis: Long) {
         val next = unacknowledged.minByOrNull { it.deadlineMillis } ?: return
-        next.deadlineMillis = nowMillis + retransmissionTimeoutMillis
+        next.deadlineMillis = nowMillis + retransmitMillis
         next.retransmissions += 1
-        if (next.retransmissions > maxRetransmissions) {
+        if (next.retransmissions > retransmitLimit) {
             die("packet ${next.sequence} not acknowledged")
             return
         }

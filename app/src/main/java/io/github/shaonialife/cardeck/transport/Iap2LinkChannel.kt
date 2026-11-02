@@ -1,5 +1,6 @@
 package io.github.shaonialife.cardeck.transport
 
+import io.github.shaonialife.cardeck.bt.AdapterMode
 import io.github.shaonialife.cardeck.iap2.Iap2LinkEngine
 import java.io.Closeable
 import java.io.IOException
@@ -14,9 +15,14 @@ import java.util.concurrent.TimeUnit
 class Iap2LinkChannel(
     private val stream: DuplexStream,
     name: String = "iap2-link",
+    /**
+     * Wireless CarPlay adapter (smartBox) link: responder that waits for the box's opening and
+     * echoes its SYN (see [Iap2LinkEngine.adapterResponder]). Decided once at construction.
+     */
+    val adapterMode: Boolean = AdapterMode.active,
     private val log: (String) -> Unit = {},
 ) : Closeable {
-    private val engine = Iap2LinkEngine()
+    private val engine = Iap2LinkEngine().apply { adapterResponder = adapterMode }
     private val lock = Object()
     private val controls = LinkedBlockingQueue<ByteArray?>()
     private val readyLatch = CountDownLatch(1)
@@ -45,6 +51,7 @@ class Iap2LinkChannel(
         engine.onUnknownSessionData = { sessionId, size ->
             log("LINK: dropped data frame for unknown session $sessionId ($size bytes)")
         }
+        engine.onAdapterEvent = { line -> log("ADAPTER: link $line") }
         engine.onFrameReceived = { control, sequence, ack, sessionId, size ->
             // 真车调试关键观测：车机在识别阶段是否回帧、回什么（静默分歧全靠它定位）
             if (rxFrameLogs < FRAME_LOG_LIMIT) {
@@ -117,10 +124,15 @@ class Iap2LinkChannel(
 
     private fun runReader() {
         try {
-            synchronized(lock) {
-                engine.start(nowMillis())
-                drainOutputLocked()
+            if (adapterMode) {
+                log("ADAPTER: link in responder mode - waiting for the adapter's detect marker (no own SYN)")
+            } else {
+                synchronized(lock) {
+                    engine.start(nowMillis())
+                    drainOutputLocked()
+                }
             }
+            var responderStarted = false
             val buffer = ByteArray(4096)
             while (true) {
                 val count = stream.read(buffer)
@@ -132,6 +144,17 @@ class Iap2LinkChannel(
                 synchronized(lock) {
                     if (terminated) return
                     dumpInbound(buffer.copyOf(count))
+                    if (adapterMode && !responderStarted) {
+                        // Reference (bluetooth.rs): start the link on the box's first bytes, answering
+                        // its detect marker with ours (re-sent each 1 s until its SYN arrives).
+                        responderStarted = true
+                        val marker = buffer.copyOf(count).startsWith(Iap2LinkEngine.MARKER)
+                        log(
+                            "ADAPTER: rx ${if (marker) "detect marker" else "first ${count}B (no marker)"} - " +
+                                "tx detect marker, waiting for the adapter's SYN",
+                        )
+                        engine.startResponder(nowMillis())
+                    }
                     engine.feed(buffer.copyOf(count), nowMillis())
                     processEventsLocked()
                     drainOutputLocked()
@@ -248,6 +271,8 @@ class Iap2LinkChannel(
     }
 
     private fun nowMillis(): Long = System.nanoTime() / 1_000_000L
+
+    private fun ByteArray.startsWith(prefix: ByteArray): Boolean = size >= prefix.size && prefix.indices.all { this[it] == prefix[it] }
 
     private companion object {
         const val PACER_POLL_MILLIS = 20L

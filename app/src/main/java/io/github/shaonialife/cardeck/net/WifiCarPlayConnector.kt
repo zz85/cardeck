@@ -7,6 +7,7 @@ import android.net.NetworkCapabilities
 import android.net.NetworkRequest
 import android.net.wifi.WifiNetworkSpecifier
 import android.os.SystemClock
+import io.github.shaonialife.cardeck.bt.AdapterMode
 import io.github.shaonialife.cardeck.util.Bg
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
@@ -68,6 +69,13 @@ class WifiCarPlayConnector(
      */
     fun gatewayAddress(): String? {
         val network = boundNetwork.get() ?: return null
+        // Wireless adapters (smartBox) run a router-less DHCP network: no default route, so
+        // the "gateway = car" fallback would be null. Use the DHCP server (= the box) first.
+        if (AdapterMode.active) {
+            val choice = adapterFallbackHost()
+            log("WiFi: adapter fallback host ${choice?.let { "${it.host} (${it.source})" } ?: "unavailable (no DHCP server/gateway)"}")
+            return choice?.host
+        }
         return try {
             connectivityManager
                 .getLinkProperties(network)
@@ -79,6 +87,16 @@ class WifiCarPlayConnector(
             null
         }
     }
+
+    /** DHCP server of the bound network (the box itself on a wireless adapter's Wi-Fi). */
+    fun dhcpServerAddress(): String? = AdapterNetwork.dhcpServer(connectivityManager, boundNetwork.get())
+
+    /**
+     * Adapter-mode host when mDNS gave nothing usable: DHCP server → [invitePeer] (source address
+     * of the box's `GET /ctrl-int/1/connect`) → default-route gateway.
+     */
+    fun adapterFallbackHost(invitePeer: String? = null): EndpointHosts.AdapterHost? =
+        AdapterNetwork.fallbackHost(connectivityManager, boundNetwork.get(), invitePeer)
 
     /**
      * 本机在当前绑定网络上的 IPv4 地址（如 10.174.189.57）。
@@ -229,6 +247,7 @@ class WifiCarPlayConnector(
                     boundNetwork.set(network)
                     result.set(network)
                     log("WiFi: joined app-only network \"$ssid\" ($network bindProcessToNetwork=$bound) - other apps unaffected")
+                    logAdapterLink(network)
                     latch.countDown()
                 }
 
@@ -339,6 +358,7 @@ class WifiCarPlayConnector(
                     boundNetwork.set(network)
                     val bound = connectivityManager.bindProcessToNetwork(network)
                     log("WiFi: bound current WiFi network $network bindProcessToNetwork=$bound")
+                    logAdapterLink(network)
                     if (reported.compareAndSet(false, true)) onResult(true)
                 }
 
@@ -379,6 +399,17 @@ class WifiCarPlayConnector(
                 )
             }
         }
+    }
+
+    /**
+     * Adapter-mode diagnostic: the box's network has no default route and no internet, which is
+     * expected (binding doesn't require either); log what the host fallback will have to work with.
+     */
+    private fun logAdapterLink(network: Network) {
+        if (!AdapterMode.active) return
+        val dhcp = AdapterNetwork.dhcpServer(connectivityManager, network)
+        val gateway = AdapterNetwork.defaultGateway(connectivityManager, network)
+        log("WiFi: adapter link dhcpServer=${dhcp ?: "none"} defaultGateway=${gateway ?: "none (router-less, expected)"}")
     }
 
     fun release() {
