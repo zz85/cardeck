@@ -385,6 +385,39 @@ object SessionController {
     @Volatile
     private var senderLinkGenerationCache: ReceiverProfile.LinkGeneration? = null
 
+    /**
+     * A wireless CarPlay adapter that already knows this phone skips the Bluetooth bootstrap and
+     * just invites us over its Wi-Fi (`GET /ctrl-int/1/connect`, repeated every ~17 s). Start the
+     * AirPlay session from the invite, as the reference sender does, when the phone is on the
+     * adapter's Wi-Fi and nothing else is running.
+     */
+    private fun onAdapterInvite(peer: String?) {
+        if (!AdapterMode.active || connectCancelled) return
+        if (videoSender?.isRunning == true || sessionStarting.get()) return
+        if (bluetoothServer?.isRunning != true) return
+        val host = peer?.takeIf { EndpointHosts.isUsableAdapterAddress(it) } ?: return
+        val ssid = shellWifiStatus().second ?: knownCarHotspotSsid()
+        if (ssid.isNullOrBlank()) {
+            appendLog("ADAPTER: invite from $host but the phone's Wi-Fi SSID is unknown - waiting for Bluetooth")
+            return
+        }
+        appendLog("ADAPTER: invite from $host on \"$ssid\" without a Bluetooth bootstrap - starting AirPlay from the invite")
+        onCarPlayEndpoint(
+            Iap2SenderSession.CarPlayEndpoint(
+                ssid = ssid,
+                passphrase = lastWifiPsk.orEmpty(),
+                channel = 0,
+                securityType = 0,
+                airPlayPort = 7000,
+                deviceIdentifier = null,
+                publicKey = null,
+                sourceVersion = null,
+                ipAddresses = listOf(host),
+            ),
+            "adapter invite",
+        )
+    }
+
     private fun knownCarHotspotSsid(): String? = boundCarSsid ?: lastCarWifiSsid
 
     /**
@@ -486,7 +519,10 @@ object SessionController {
                     },
                     targetProvider = targetProvider,
                 )
-            ctrlAdvertiser = CarPlayCtrlAdvertiser(context) { line -> appendLog(line) }
+            ctrlAdvertiser =
+                CarPlayCtrlAdvertiser(context) { line -> appendLog(line) }.also { advertiser ->
+                    advertiser.onInvite = { peer -> onAdapterInvite(peer) }
+                }
             endpointBrowser =
                 CarPlayServiceBrowser(
                     context,

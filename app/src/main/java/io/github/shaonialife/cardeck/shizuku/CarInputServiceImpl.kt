@@ -428,7 +428,23 @@ class CarInputServiceImpl(
             // 另需 ADD_ALWAYS_UNLOCKED_DISPLAY——部分 ROM 未授予 shell，带上会抛
             // SecurityException 把整块屏打挂，因此逐级降级重试。
             var vd: android.hardware.display.VirtualDisplay? = null
-            if (trusted) {
+            if (ownDisplayGroupCrashesSystem) {
+                // Bigme's PowerStandbyManager only exists for the default power group: adding a display
+                // group makes system_server throw an NPE in onDisplayGroupAdded and soft-reboot the phone
+                // (B7 Pro, 2026-11-03 dropbox system_server_crash). Stay in the default group there.
+                fileLog("$name: skipping OWN_DISPLAY_GROUP on this ROM (a new display group crashes system_server)")
+                vd =
+                    createVirtualDisplayAttempt(
+                        dm,
+                        name,
+                        width,
+                        height,
+                        dpi,
+                        surface,
+                        baseFlags,
+                        if (trusted) "trusted base" else "untrusted",
+                    )
+            } else if (trusted) {
                 vd =
                     createVirtualDisplayAttempt(
                         dm,
@@ -568,6 +584,15 @@ class CarInputServiceImpl(
     }
 
     /** 创建一次虚拟屏；失败（含 SecurityException / ROM 静默返回 null）返回 null 并留痕。 */
+
+    /** ROMs whose power manager crashes when a virtual display gets its own display group (Bigme). */
+    private val ownDisplayGroupCrashesSystem: Boolean by lazy {
+        android.os.Build.MANUFACTURER
+            .equals("Bigme", ignoreCase = true) ||
+            android.os.Build.BRAND
+                .equals("Bigme", ignoreCase = true)
+    }
+
     private fun createVirtualDisplayAttempt(
         dm: android.hardware.display.DisplayManager,
         name: String,
